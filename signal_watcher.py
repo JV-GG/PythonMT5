@@ -21,6 +21,7 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
     "BTC/USD": "BTCUSD",
     "GBP/USD": "GBPUSD",
     "USD/JPY": "USDJPY",
+    "XAU/USD": "XAUUSD",
 }
 
 # Pair codes used in SignalTrade API URLs — e.g. "BTCUSD" → GET /api/signals/BTCUSD
