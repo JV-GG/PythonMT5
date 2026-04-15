@@ -71,9 +71,11 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         logger.warning(f"Unknown pair display: {pair_display}")
         return None
 
+    volume = settings.xauusd_volume if mt5_symbol == "XAUUSD" else settings.default_volume
+
     return TradeRequest(
         symbol=mt5_symbol,
-        volume=settings.default_volume,
+        volume=volume,
         order_type="buy" if direction == "BUY" else "sell",
         sl=float(sl),
         tp=float(tp),
