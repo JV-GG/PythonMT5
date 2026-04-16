@@ -41,6 +41,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         "pair": "BTC/USD",           <- display name (key for PAIR_DISPLAY_TO_MT5)
         "aiSignal": {
           "signal": "BUY" | "SELL" | "NEUTRAL",
+          "confidence": number,       <- must be >= 55 to execute
           "entry": number,
           "stopLoss": number,
           "takeProfit1": number,   <- used as MT5 TP
@@ -48,12 +49,28 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         }
       }
 
-    Returns None if the signal is NEUTRAL or invalid.
+    Returns None if the signal is NEUTRAL, invalid, or confidence < 55 (potential/neutral — do not execute).
     """
     ai = signal_data.get("aiSignal", {})
     direction: str = ai.get("signal", "NEUTRAL")
+    confidence: float = ai.get("confidence", 0)
 
     if direction not in ("BUY", "SELL"):
+        return None
+
+    # Block execution for low-confidence signals (< 55%)
+    # These are considered "potential" or "neutral" — not strong enough to trade.
+    #
+    # NOTE: SignalTrade already enforces session-based thresholds (55% for London/Pre-London,
+    # 70% for Asian/Off-hours) before returning the signal. This Python-side check is a
+    # safety floor — it blocks any signal that slipped through below 55%, regardless of
+    # session. Signals with 55–69% confidence during Asian hours are blocked by SignalTrade
+    # and never reach this point.
+    if confidence < 55:
+        logger.info(
+            f"Signal skipped — confidence {confidence}% is below 55% threshold "
+            f"(potential/neutral). Direction: {direction}"
+        )
         return None
 
     entry = ai.get("entry")
@@ -115,6 +132,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         pair_display = data.get("pair", "")  # e.g. "BTC/USD"
         timestamp = data.get("timestamp", "")
+        confidence = data.get("aiSignal", {}).get("confidence", 0)
 
         # Skip if already processed this signal
         if timestamp == _last_signals.get(pair_display):
@@ -127,7 +145,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         _last_signals[pair_display] = timestamp
         logger.info(
             f"New {trade_req.order_type.upper()} signal for {pair_display} | "
-            f"sl={trade_req.sl} tp={trade_req.tp}"
+            f"confidence={confidence}% | sl={trade_req.sl} tp={trade_req.tp}"
         )
 
         try:
