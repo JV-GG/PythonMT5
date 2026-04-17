@@ -1,6 +1,6 @@
 """
 MetaTrader 5 service layer.
-Handles MT5 connection and trade execution.
+Handles MT5 connection, trade execution, spacing checks, and risk management.
 """
 import time
 
@@ -336,6 +336,198 @@ def should_execute_trade(
 
     logger.info(f"Trade allowed: no conflicting positions | symbol={symbol}")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Global risk management state (session-scoped)
+# ---------------------------------------------------------------------------
+
+_daily_start_balance: float | None = None
+_daily_loss_limit_hit: bool = False
+_last_reset_time: float | None = None
+DAILY_RESET_INTERVAL = 86400.0   # 24 hours in seconds
+
+# Equity peak tracking (resets every 24 hours with daily metrics)
+_peak_equity: float | None = None
+EQUITY_DRAWDOWN_LIMIT = 0.10     # 10% drop from peak → block trading
+
+
+def _get_account_info() -> dict | None:
+    """
+    Pull live account metrics from MT5.
+    Returns None if MT5 is unavailable or disconnected.
+    """
+    info = mt5.account_info()
+    if info is None:
+        logger.error("Failed to fetch MT5 account info")
+        return None
+    return {
+        "balance": info.balance,
+        "equity": info.equity,
+        "margin": info.margin,
+        "free_margin": info.margin_free,
+    }
+
+
+def _reset_daily_metrics() -> None:
+    """
+    Snapshot the current balance as the new 24-hour reference point.
+    Clears the drawdown flag so the system can trade again after the window resets.
+    """
+    global _daily_start_balance, _daily_loss_limit_hit, _last_reset_time, _peak_equity
+    now = time.time()
+    if _last_reset_time is None or (now - _last_reset_time) >= DAILY_RESET_INTERVAL:
+        info = _get_account_info()
+        if info is None:
+            return
+        _daily_start_balance = info["balance"]
+        _daily_loss_limit_hit = False
+        _peak_equity = None          # reset equity peak on new session
+        _last_reset_time = now
+        logger.info(
+            f"Daily metrics reset | balance={_daily_start_balance:.2f} "
+            f"(next reset in {DAILY_RESET_INTERVAL / 3600:.1f}h)"
+        )
+
+
+def is_margin_safe(margin_threshold: float = 0.40) -> tuple[bool, dict | None]:
+    """
+    Block new trades if current margin usage is at or above the threshold.
+
+    margin_usage = margin_used / (margin_used + free_margin)
+    If margin_usage >= threshold → unsafe.
+
+    Returns:
+        (True, account_info)   → trading is safe
+        (False, account_info)   → margin usage too high
+    """
+    info = _get_account_info()
+    if info is None:
+        return False, None
+
+    total_margin = info["margin"] + info["free_margin"]
+    if total_margin <= 0:
+        # No open positions — trivially safe
+        return True, info
+
+    margin_usage = info["margin"] / total_margin
+
+    if margin_usage >= margin_threshold:
+        logger.warning(
+            f"Margin usage too high | usage={margin_usage:.2%} threshold={margin_threshold:.2%} "
+            f"margin={info['margin']:.2f} free_margin={info['free_margin']:.2f}"
+        )
+        return False, info
+
+    logger.info(
+        f"Margin check passed | usage={margin_usage:.2%} threshold={margin_threshold:.2%} "
+        f"margin={info['margin']:.2f} free_margin={info['free_margin']:.2f}"
+    )
+    return True, info
+
+
+def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | None]:
+    """
+    Block new trades if the rolling 24-hour session loss reaches the threshold.
+
+    loss_percent = (daily_start_balance - current_balance) / daily_start_balance
+    If loss_percent >= threshold → trading paused for the rest of the window.
+
+    Returns:
+        (True, None)           → trading is safe
+        (False, loss_percent)  → drawdown limit hit
+    """
+    _reset_daily_metrics()
+
+    if _daily_start_balance is None or _daily_start_balance <= 0:
+        logger.warning("Daily start balance unavailable — allowing trades with caution")
+        return True, None
+
+    info = _get_account_info()
+    if info is None:
+        return False, None
+
+    current_balance = info["balance"]
+    loss = _daily_start_balance - current_balance
+    loss_percent = loss / _daily_start_balance
+
+    if _daily_loss_limit_hit:
+        remaining = DAILY_RESET_INTERVAL - (time.time() - _last_reset_time)
+        logger.warning(
+            f"Daily loss limit already hit | "
+            f"(will reset in {remaining:.0f}s)"
+        )
+        return False, loss_percent
+
+    if loss_percent >= drawdown_threshold:
+        global _daily_loss_limit_hit
+        _daily_loss_limit_hit = True
+        logger.warning(
+            f"Daily loss limit reached | loss={loss:.2f} ({loss_percent:.2%}) "
+            f"daily_start={_daily_start_balance:.2f} current={current_balance:.2f}"
+        )
+        return False, loss_percent
+
+    if loss > 0:
+        logger.info(
+            f"Drawdown check passed | loss={loss:.2f} ({loss_percent:.2%}) "
+            f"daily_start={_daily_start_balance:.2f}"
+        )
+
+    return True, None
+
+
+def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) -> tuple[bool, dict | None]:
+    """
+    Track the intraday peak equity and block new trades if equity has dropped
+    more than equity_drawdown_limit (default 10%) from that peak.
+
+    The peak is updated every call so that a new higher equity reading resets
+    thewatermark upward. The metric resets to None on the 24-hour boundary
+    (handled by _reset_daily_metrics).
+
+    Args:
+        equity_drawdown_limit: fraction of peak equity that triggers a block (default 0.10)
+
+    Returns:
+        (True,  info_dict)  → trading is allowed
+        (False, info_dict)  → equity has dropped too far from peak
+    """
+    info = _get_account_info()
+    if info is None:
+        return False, None
+
+    current_equity = info["equity"]
+
+    # Initialize peak on first call or after daily reset
+    global _peak_equity
+    if _peak_equity is None or current_equity > _peak_equity:
+        _peak_equity = current_equity
+        logger.info(
+            f"Equity peak updated | peak={_peak_equity:.2f} current={current_equity:.2f}"
+        )
+
+    # Guard against division by zero (equity should never be 0 in practice)
+    if _peak_equity <= 0:
+        logger.warning("Peak equity is zero or negative — allowing trades with caution")
+        return True, info
+
+    drawdown = (_peak_equity - current_equity) / _peak_equity
+
+    if drawdown >= equity_drawdown_limit:
+        logger.warning(
+            f"Equity drawdown too deep | "
+            f"peak={_peak_equity:.2f} current={current_equity:.2f} "
+            f"drawdown={drawdown:.2%} limit={equity_drawdown_limit:.2%}"
+        )
+        return False, info
+
+    logger.info(
+        f"Equity peak check passed | "
+        f"peak={_peak_equity:.2f} current={current_equity:.2f} "
+        f"drawdown={drawdown:.2%}"
+    )
+    return True, info
 
 
 def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> dict:

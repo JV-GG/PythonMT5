@@ -18,6 +18,9 @@ from mt5_service import (
     open_trade,
     modify_position_sl_tp,
     should_execute_trade,
+    is_margin_safe,
+    is_drawdown_safe,
+    is_equity_peak_safe,
     MT5ConnectionError,
     MT5TradeError,
 )
@@ -361,6 +364,34 @@ async def trade(request: TradeRequest):
     its entry price is sufficiently far from any existing open position of the
     same symbol and direction.
     """
+    # Risk gate: equity peak → margin → daily drawdown.
+    # All three are checked before any spacing or trade execution logic.
+    equity_ok, equity_info = is_equity_peak_safe()
+    if not equity_ok:
+        return TradeResponse(
+            success=False,
+            order_id=None,
+            executed_price=None,
+            message="Trade blocked: equity dropped 10% from intraday peak",
+        )
+
+    if not is_margin_safe()[0]:
+        return TradeResponse(
+            success=False,
+            order_id=None,
+            executed_price=None,
+            message="Trade blocked: margin usage exceeded 40%",
+        )
+
+    drawdown_ok, loss_pct = is_drawdown_safe()
+    if not drawdown_ok:
+        return TradeResponse(
+            success=False,
+            order_id=None,
+            executed_price=None,
+            message="Trade blocked: daily loss limit reached (50%)",
+        )
+
     # Spacing filter: prevent overtrading at similar price levels.
     # Use current market tick as entry price proxy (what the order will actually fill at).
     entry_price = _get_current_price(request.symbol, request.order_type)

@@ -9,7 +9,14 @@ from typing import Any
 import httpx
 
 from config import get_settings
-from mt5_service import open_trade, should_execute_trade, MT5ConnectionError, MT5TradeError
+from mt5_service import (
+    open_trade,
+    should_execute_trade,
+    is_margin_safe,
+    is_drawdown_safe,
+    MT5ConnectionError,
+    MT5TradeError,
+)
 from schemas import TradeRequest
 
 logger = logging.getLogger(__name__)
@@ -151,6 +158,21 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         ai = data.get("aiSignal", {})
         signal_entry = ai.get("entry")
+
+        # Risk gate: margin and drawdown checks before anything else
+        if not is_margin_safe()[0]:
+            logger.warning(
+                f"Trade blocked (margin) for {pair_display} | "
+                f"direction={trade_req.order_type}"
+            )
+            return
+
+        if not is_drawdown_safe()[0]:
+            logger.warning(
+                f"Trade blocked (drawdown) for {pair_display} | "
+                f"direction={trade_req.order_type}"
+            )
+            return
 
         # Spacing filter: skip if price is too close to an existing position
         if signal_entry is not None:
