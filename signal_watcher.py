@@ -46,7 +46,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         "pair": "BTC/USD",           <- display name (key for PAIR_DISPLAY_TO_MT5)
         "aiSignal": {
           "signal": "BUY" | "SELL" | "NEUTRAL",
-          "confidence": number,       <- must be >= 55 to execute
+          "confidence": number,       <- must be >= 65 to execute (safety floor)
           "entry": number,
           "stopLoss": number,
           "takeProfit1": number,   <- used as MT5 TP
@@ -54,7 +54,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         }
       }
 
-    Returns None if the signal is NEUTRAL, invalid, or confidence < 55 (potential/neutral — do not execute).
+    Returns None if the signal is NEUTRAL, invalid, or confidence < 65 (potential/neutral — do not execute).
     """
     ai = signal_data.get("aiSignal", {})
     direction: str = ai.get("signal", "NEUTRAL")
@@ -63,17 +63,10 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     if direction not in ("BUY", "SELL"):
         return None
 
-    # Block execution for low-confidence signals (< 55%)
-    # These are considered "potential" or "neutral" — not strong enough to trade.
-    #
-    # NOTE: SignalTrade already enforces session-based thresholds (55% for London/Pre-London,
-    # 70% for Asian/Off-hours) before returning the signal. This Python-side check is a
-    # safety floor — it blocks any signal that slipped through below 55%, regardless of
-    # session. Signals with 55–69% confidence during Asian hours are blocked by SignalTrade
-    # and never reach this point.
-    if confidence < 55:
+    # Block execution for low-confidence signals (< 65%)
+    if confidence < 65:
         logger.info(
-            f"Signal skipped — confidence {confidence}% is below 55% threshold "
+            f"Signal skipped — confidence {confidence}% is below 65% threshold "
             f"(potential/neutral). Direction: {direction}"
         )
         return None
