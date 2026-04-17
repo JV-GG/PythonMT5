@@ -94,7 +94,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         logger.warning(f"Unknown pair display: {pair_display}")
         return None
 
-    volume = settings.xauusd_volume if mt5_symbol == "XAUUSD" else settings.default_volume
+    volume = settings.xauusd_volume if mt5_symbol in ("XAUUSD", "BTCUSD") else settings.default_volume
 
     return TradeRequest(
         symbol=mt5_symbol,
