@@ -437,6 +437,7 @@ def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | No
         (True, None)           → trading is safe
         (False, loss_percent)  → drawdown limit hit
     """
+    global _daily_loss_limit_hit
     _reset_daily_metrics()
 
     if _daily_start_balance is None or _daily_start_balance <= 0:
