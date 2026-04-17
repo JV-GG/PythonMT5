@@ -199,11 +199,17 @@ def get_atr(symbol: str, timeframe: int = mt5.TIMEFRAME_M5, period: int = 14) ->
         logger.warning(f"ATR fetch failed for {symbol}: insufficient data")
         return None
 
+    # MT5 on Windows returns numpy.void rows that don't expose named attributes.
+    # Convert each row to a plain dict so .high / .low / .close always work.
+    if hasattr(rates[0], "tolist"):
+        rates = [row.tolist() for row in rates]
+
     tr_list: list[float] = []
     for i in range(1, len(rates)):
-        high = rates[i].high
-        low = rates[i].low
-        prev_close = rates[i - 1].close
+        row = rates[i]
+        high = row.high if hasattr(row, "high") else row[2]
+        low = row.low if hasattr(row, "low") else row[3]
+        prev_close = rates[i - 1].close if hasattr(rates[i - 1], "close") else rates[i - 1][4]
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         tr_list.append(tr)
 
