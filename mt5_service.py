@@ -460,7 +460,6 @@ def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | No
         return False, loss_percent
 
     if loss_percent >= drawdown_threshold:
-        global _daily_loss_limit_hit
         _daily_loss_limit_hit = True
         logger.warning(
             f"Daily loss limit reached | loss={loss:.2f} ({loss_percent:.2%}) "
