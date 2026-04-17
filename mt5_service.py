@@ -2,6 +2,8 @@
 MetaTrader 5 service layer.
 Handles MT5 connection and trade execution.
 """
+import time
+
 import MetaTrader5 as mt5
 import logging
 from typing import Any
@@ -140,14 +142,112 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     )
 
 
-# Minimum distance (in price units) required between new entry and existing
-# positions of the same symbol and direction before a new trade is allowed.
-symbol_min_distance: dict[str, float] = {
+# ---------------------------------------------------------------------------
+# ATR-based dynamic spacing
+# ---------------------------------------------------------------------------
+
+# ATR cache: {symbol: {"value": float, "timestamp": float}}
+# Prevents recalculating ATR on every single request.
+_atr_cache: dict[str, dict[str, float]] = {}
+
+# How long (seconds) a cached ATR value is valid before refresh.
+ATR_CACHE_TTL = 20.0
+
+# Multiplier applied to ATR to derive the minimum distance per symbol.
+# Higher = more conservative spacing; lower = tighter spacing allowed.
+symbol_atr_multiplier: dict[str, float] = {
+    "BTCUSD": 1.5,
+    "XAUUSD": 1.2,
+    "USDJPY": 1.0,
+    "GBPUSD": 1.0,
+}
+
+# Fallback minimum distances (used if ATR fetch fails).
+FALLBACK_MIN_DISTANCE: dict[str, float] = {
     "BTCUSD": 300,
     "XAUUSD": 10,
     "USDJPY": 0.3,
     "GBPUSD": 0.003,
 }
+
+
+def get_atr(symbol: str, timeframe: int = mt5.TIMEFRAME_M5, period: int = 14) -> float | None:
+    """
+    Calculate the Average True Range (ATR) for a given symbol.
+
+    ATR is computed from M5 bars using Wilder's smoothing method (simple rolling mean
+    of the True Range over `period` bars), matching the standard MT5 ATR indicator.
+
+    Results are cached for ATR_CACHE_TTL seconds to avoid excessive MT5 calls.
+
+    Args:
+        symbol:    MT5 symbol, e.g. "BTCUSD"
+        timeframe: MT5 timeframe constant (default: M5)
+        period:    ATR lookback period (default: 14)
+
+    Returns:
+        Latest ATR value, or None if the symbol cannot be fetched.
+    """
+    now = time.time()
+    cached = _atr_cache.get(symbol)
+
+    if cached is not None and (now - cached["timestamp"]) < ATR_CACHE_TTL:
+        return cached["value"]
+
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, period + 1)
+    if rates is None or len(rates) < period + 1:
+        logger.warning(f"ATR fetch failed for {symbol}: insufficient data")
+        return None
+
+    tr_list: list[float] = []
+    for i in range(1, len(rates)):
+        high = rates[i].high
+        low = rates[i].low
+        prev_close = rates[i - 1].close
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_list.append(tr)
+
+    if len(tr_list) < period:
+        logger.warning(f"ATR fetch failed for {symbol}: not enough TR samples")
+        return None
+
+    atr = sum(tr_list[-period:]) / period
+
+    if atr <= 0:
+        logger.warning(f"ATR is zero or negative for {symbol}: {atr}")
+        return None
+
+    _atr_cache[symbol] = {"value": atr, "timestamp": now}
+    logger.info(f"ATR={atr:.5f} cached for {symbol} (TTL={ATR_CACHE_TTL}s)")
+    return atr
+
+
+def get_dynamic_min_distance(symbol: str) -> float:
+    """
+    Return the minimum required price distance for a symbol using ATR.
+
+    Formula: min_distance = ATR * symbol_atr_multiplier[symbol]
+
+    Falls back to fixed values if ATR cannot be retrieved or is invalid.
+
+    Args:
+        symbol: MT5 symbol, e.g. "BTCUSD"
+
+    Returns:
+        Minimum distance in price units.
+    """
+    atr = get_atr(symbol)
+    multiplier = symbol_atr_multiplier.get(symbol, 1.0)
+
+    if atr is not None:
+        min_dist = atr * multiplier
+        logger.info(f"Dynamic spacing | symbol={symbol} atr={atr:.5f} multiplier={multiplier} min_distance={min_dist:.5f}")
+        return min_dist
+
+    # Fallback to fixed values
+    fallback = FALLBACK_MIN_DISTANCE.get(symbol, 0.0)
+    logger.warning(f"ATR unavailable for {symbol}, using fallback min_distance={fallback}")
+    return fallback
 
 
 def should_execute_trade(
@@ -157,8 +257,8 @@ def should_execute_trade(
     active_trades_ref: dict[int, dict],
 ) -> bool:
     """
-    Decide whether a new trade should be allowed based on spacing from existing
-    open positions of the same symbol and direction.
+    Decide whether a new trade should be allowed based on ATR-based dynamic
+    spacing from existing open positions of the same symbol and direction.
 
     Reads from the active_trades registry first (avoids extra MT5 calls when
     the position is already tracked), then falls back to mt5.positions_get()
@@ -175,7 +275,7 @@ def should_execute_trade(
         False → trade should be skipped (price too close to an existing position)
     """
     settings = get_settings()
-    min_dist = symbol_min_distance.get(symbol, 0.0)
+    min_dist = get_dynamic_min_distance(symbol)
 
     # 1. Check active_trades registry (preferred — no MT5 round-trip)
     for order_id, trade in active_trades_ref.items():
