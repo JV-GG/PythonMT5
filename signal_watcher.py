@@ -14,6 +14,11 @@ from schemas import TradeRequest
 
 logger = logging.getLogger(__name__)
 
+# Shared trade registry for adaptive SL/TP management.
+# Key: order_id (int), Value: dict with trade metadata.
+# Fields: order_id, symbol, entry_price, direction, sl, tp1, tp_final, stage
+active_trades: dict[int, dict] = {}
+
 # Maps SignalTrade pair display names (from API response "pair" field) to MT5 symbols.
 # Key   = SignalTrade "pair" value, e.g. "BTC/USD"
 # Value = MT5 symbol, e.g. "BTCUSD"
@@ -75,10 +80,11 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
     entry = ai.get("entry")
     sl = ai.get("stopLoss")
-    tp = ai.get("takeProfit1") or ai.get("takeProfit")
+    tp1_value = ai.get("takeProfit1")
+    tp_final_value = ai.get("takeProfit")
 
-    if not all(isinstance(v, (int, float)) and v > 0 for v in [entry, sl, tp]):
-        logger.warning(f"Invalid signal levels — entry={entry}, sl={sl}, tp={tp}")
+    if not all(isinstance(v, (int, float)) and v > 0 for v in [entry, sl, tp1_value]):
+        logger.warning(f"Invalid signal levels — entry={entry}, sl={sl}, tp1={tp1_value}")
         return None
 
     settings = get_settings()
@@ -95,7 +101,9 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         volume=volume,
         order_type="buy" if direction == "BUY" else "sell",
         sl=float(sl),
-        tp=float(tp),
+        tp=float(tp1_value),        # MT5 TP = TP1
+        tp1=float(tp1_value),
+        tp_final=float(tp_final_value) if tp_final_value else None,
     )
 
 
@@ -151,6 +159,17 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         try:
             result = open_trade(trade_req)
             logger.info(f"Trade fired successfully — order_id={result.order_id}")
+            active_trades[result.order_id] = {
+                "order_id": result.order_id,
+                "symbol": trade_req.symbol,
+                "entry_price": result.executed_price,
+                "direction": trade_req.order_type,
+                "sl": trade_req.sl,
+                "tp1": trade_req.tp1 or trade_req.tp,
+                "tp_final": trade_req.tp_final or trade_req.tp,
+                "stage": "initial",
+            }
+            logger.info(f"Registered trade {result.order_id} in active_trades: stage=initial, tp1={trade_req.tp1 or trade_req.tp}, tp_final={trade_req.tp_final or trade_req.tp}")
         except (MT5ConnectionError, MT5TradeError) as e:
             logger.error(f"Failed to fire trade for {pair_display}: {e}")
 

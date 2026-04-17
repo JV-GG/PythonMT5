@@ -138,3 +138,39 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         executed_price=result.price,
         message=f"Order {result.order} executed successfully.",
     )
+
+
+def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> dict:
+    """
+    Modify SL/TP of an open position.
+
+    Args:
+        position_ticket: MT5 position ticket number
+        new_sl: New stop loss price
+        new_tp: New take profit price (optional — keeps existing TP if None)
+
+    Returns:
+        Result dict from mt5.order_send
+    """
+    request = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": position_ticket,
+        "sl": new_sl,
+        "tp": new_tp if new_tp is not None else 0.0,
+    }
+    logger.info(
+        f"Modifying position {position_ticket} | sl={new_sl} tp={new_tp}"
+    )
+    result = mt5.order_send(request)
+    if result is None:
+        logger.error(f"Modify returned None. Error: {mt5.last_error()}")
+        return {}
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        logger.warning(
+            f"Modify failed retcode={result.retcode} comment={result.comment}"
+        )
+    else:
+        logger.info(
+            f"Position {position_ticket} modified successfully | sl={new_sl} tp={new_tp}"
+        )
+    return result
