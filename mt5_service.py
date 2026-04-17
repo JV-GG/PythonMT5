@@ -140,6 +140,104 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     )
 
 
+# Minimum distance (in price units) required between new entry and existing
+# positions of the same symbol and direction before a new trade is allowed.
+symbol_min_distance: dict[str, float] = {
+    "BTCUSD": 300,
+    "XAUUSD": 10,
+    "USDJPY": 0.3,
+    "GBPUSD": 0.003,
+}
+
+
+def should_execute_trade(
+    symbol: str,
+    direction: str,
+    new_entry_price: float,
+    active_trades_ref: dict[int, dict],
+) -> bool:
+    """
+    Decide whether a new trade should be allowed based on spacing from existing
+    open positions of the same symbol and direction.
+
+    Reads from the active_trades registry first (avoids extra MT5 calls when
+    the position is already tracked), then falls back to mt5.positions_get()
+    for any positions not yet registered.
+
+    Args:
+        symbol:           MT5 symbol, e.g. "BTCUSD"
+        direction:        "buy" or "sell"
+        new_entry_price:  proposed entry price from the signal
+        active_trades_ref: reference to the shared active_trades dict
+
+    Returns:
+        True  → trade is allowed (sufficient distance from all existing positions)
+        False → trade should be skipped (price too close to an existing position)
+    """
+    settings = get_settings()
+    min_dist = symbol_min_distance.get(symbol, 0.0)
+
+    # 1. Check active_trades registry (preferred — no MT5 round-trip)
+    for order_id, trade in active_trades_ref.items():
+        if trade["symbol"] != symbol or trade["direction"] != direction:
+            continue
+        existing_price = trade["entry_price"]
+        if direction == "buy":
+            if new_entry_price <= existing_price - min_dist:
+                logger.info(
+                    f"Trade allowed (active_trades) | symbol={symbol} new_entry={new_entry_price} "
+                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
+                )
+                return True
+        else:
+            if new_entry_price >= existing_price + min_dist:
+                logger.info(
+                    f"Trade allowed (active_trades) | symbol={symbol} new_entry={new_entry_price} "
+                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
+                )
+                return True
+
+    # 2. Fall back to MT5 positions (covers trades opened outside this system)
+    positions = mt5.positions_get()
+    if positions is None:
+        return True
+
+    has_conflicting = False
+    for position in positions:
+        if position.symbol != symbol or position.magic != settings.magic_number:
+            continue
+        pos_dir = "buy" if position.type == mt5.ORDER_TYPE_BUY else "sell"
+        if pos_dir != direction:
+            continue
+        has_conflicting = True
+        existing_price = position.price_open
+        if direction == "buy":
+            if new_entry_price <= existing_price - min_dist:
+                logger.info(
+                    f"Trade allowed (MT5) | symbol={symbol} new_entry={new_entry_price} "
+                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
+                )
+                return True
+        else:
+            if new_entry_price >= existing_price + min_dist:
+                logger.info(
+                    f"Trade allowed (MT5) | symbol={symbol} new_entry={new_entry_price} "
+                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
+                )
+                return True
+
+    if has_conflicting:
+        logger.warning(
+            f"Trade skipped: too close to existing position | "
+            f"symbol={symbol} direction={direction} new_entry={new_entry_price} "
+            f"min_distance={min_dist}"
+        )
+        return False
+
+    logger.info(f"Trade allowed: no conflicting positions | symbol={symbol}")
+    return True
+
+
 def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> dict:
     """
     Modify SL/TP of an open position.

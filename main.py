@@ -17,6 +17,7 @@ from mt5_service import (
     disconnect_mt5,
     open_trade,
     modify_position_sl_tp,
+    should_execute_trade,
     MT5ConnectionError,
     MT5TradeError,
 )
@@ -355,7 +356,32 @@ async def trade(request: TradeRequest):
     - **tp**: Take Profit price (TP1 / initial TP)
     - **tp1**: First take profit target (optional, falls back to tp if omitted)
     - **tp_final**: Final take profit target (optional, falls back to tp if omitted)
+
+    A spacing check is applied before execution: a new trade is only allowed if
+    its entry price is sufficiently far from any existing open position of the
+    same symbol and direction.
     """
+    # Spacing filter: prevent overtrading at similar price levels.
+    # Use current market tick as entry price proxy (what the order will actually fill at).
+    entry_price = _get_current_price(request.symbol, request.order_type)
+    if entry_price is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cannot get current price for spacing check",
+        )
+    if not should_execute_trade(
+        request.symbol,
+        request.order_type,
+        entry_price,
+        active_trades,
+    ):
+        return TradeResponse(
+            success=False,
+            order_id=None,
+            executed_price=None,
+            message="Trade skipped: price too close to existing position",
+        )
+
     try:
         result = open_trade(request)
         _register_trade(request, result.order_id, result.executed_price)

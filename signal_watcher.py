@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from config import get_settings
-from mt5_service import open_trade, MT5ConnectionError, MT5TradeError
+from mt5_service import open_trade, should_execute_trade, MT5ConnectionError, MT5TradeError
 from schemas import TradeRequest
 
 logger = logging.getLogger(__name__)
@@ -148,6 +148,23 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             f"New {trade_req.order_type.upper()} signal for {pair_display} | "
             f"confidence={confidence}% | sl={trade_req.sl} tp={trade_req.tp}"
         )
+
+        ai = data.get("aiSignal", {})
+        signal_entry = ai.get("entry")
+
+        # Spacing filter: skip if price is too close to an existing position
+        if signal_entry is not None:
+            if not should_execute_trade(
+                trade_req.symbol,
+                trade_req.order_type,
+                float(signal_entry),
+                active_trades,
+            ):
+                logger.info(
+                    f"Trade skipped (spacing) for {pair_display} | "
+                    f"entry={signal_entry} direction={trade_req.order_type}"
+                )
+                return
 
         try:
             result = open_trade(trade_req)
