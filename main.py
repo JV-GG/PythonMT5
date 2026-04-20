@@ -98,9 +98,9 @@ def _manage_buy_trade(trade: dict, position) -> None:
     Apply adaptive SL/TP logic for a BUY position.
 
     Stages:
-      initial  → breakeven  (75% of move to TP1)
-      breakeven → tp1_hit   (price reaches TP1)
-      tp1_hit  → trailing   (SL trails upward)
+      initial     → partial_lock (75% of move to TP1)
+      partial_lock → tp1_hit     (price reaches TP1)
+      tp1_hit     → trailing     (SL trails upward)
     """
     symbol = trade["symbol"]
     entry = trade["entry_price"]
@@ -117,18 +117,19 @@ def _manage_buy_trade(trade: dict, position) -> None:
     current_sl = position.sl
 
     if stage == "initial":
-        # 75% of the way to TP1 → move SL to breakeven
+        # 75% of the way to TP1 → lock in 20% of the move as partial profit
+        locked_sl = entry + move_to_tp1 * 0.20
         threshold = entry + move_to_tp1 * 0.75
         if price >= threshold:
-            if not _is_valid_sl(symbol, "buy", entry):
-                logger.warning(f"Trade {order_id}: breakeven SL {entry} is too close to price {price}")
+            if not _is_valid_sl(symbol, "buy", locked_sl):
+                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl} is too close to price {price}")
                 return
-            modify_position_sl_tp(position.ticket, entry, tp1)
-            active_trades[order_id]["sl"] = entry
-            active_trades[order_id]["stage"] = "breakeven"
-            logger.info(f"Moved SL to breakeven | order_id={order_id} price={price}")
+            modify_position_sl_tp(position.ticket, locked_sl, tp1)
+            active_trades[order_id]["sl"] = locked_sl
+            active_trades[order_id]["stage"] = "partial_lock"
+            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl} price={price}")
 
-    elif stage == "breakeven":
+    elif stage == "partial_lock":
         # Price reached TP1 → extend TP, lock partial profit via SL
         if price >= tp1:
             locked_sl = entry + move_to_tp1 * 0.30
@@ -160,9 +161,9 @@ def _manage_sell_trade(trade: dict, position) -> None:
     Apply adaptive SL/TP logic for a SELL position (mirror of BUY).
 
     Stages:
-      initial  → breakeven  (75% of move to TP1, price moving DOWN)
-      breakeven → tp1_hit   (price drops to or below TP1)
-      tp1_hit  → trailing   (SL trails downward)
+      initial     → partial_lock (75% of move to TP1, price moving DOWN)
+      partial_lock → tp1_hit     (price drops to or below TP1)
+      tp1_hit     → trailing     (SL trails downward)
     """
     symbol = trade["symbol"]
     entry = trade["entry_price"]
@@ -179,18 +180,19 @@ def _manage_sell_trade(trade: dict, position) -> None:
     current_sl = position.sl
 
     if stage == "initial":
-        # 75% of the way to TP1 (price dropping toward tp1)
+        # 75% of the way to TP1 (price dropping toward tp1) → lock in 20% of the move as partial profit
+        locked_sl = entry - move_to_tp1 * 0.20
         threshold = entry - move_to_tp1 * 0.75
         if price <= threshold:
-            if not _is_valid_sl(symbol, "sell", entry):
-                logger.warning(f"Trade {order_id}: breakeven SL {entry} is too close to price {price}")
+            if not _is_valid_sl(symbol, "sell", locked_sl):
+                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl} is too close to price {price}")
                 return
-            modify_position_sl_tp(position.ticket, entry, tp1)
-            active_trades[order_id]["sl"] = entry
-            active_trades[order_id]["stage"] = "breakeven"
-            logger.info(f"Moved SL to breakeven | order_id={order_id} price={price}")
+            modify_position_sl_tp(position.ticket, locked_sl, tp1)
+            active_trades[order_id]["sl"] = locked_sl
+            active_trades[order_id]["stage"] = "partial_lock"
+            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl} price={price}")
 
-    elif stage == "breakeven":
+    elif stage == "partial_lock":
         # Price reached TP1 → extend TP, lock partial profit via SL
         if price <= tp1:
             locked_sl = entry - move_to_tp1 * 0.30
