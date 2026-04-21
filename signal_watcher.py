@@ -202,6 +202,19 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 "stage": "initial",
             }
             logger.info(f"Registered trade {result.order_id} in active_trades: stage=initial, tp1={trade_req.tp1 or trade_req.tp}, tp_final={trade_req.tp_final or trade_req.tp}")
+
+            # Record this trade in SignalTrade's consecutive-direction tracker
+            try:
+                async with httpx.AsyncClient() as record_client:
+                    await record_client.post(
+                        f"{settings.signaltade_url}/api/record-trade",
+                        json={"symbol": pair_display, "direction": trade_req.order_type.upper()},
+                        timeout=5.0,
+                    )
+                    logger.info(f"[TRACKER] Recorded {pair_display} {trade_req.order_type.upper()} in SignalTrade")
+            except httpx.RequestError as rec_err:
+                logger.warning(f"[TRACKER] Failed to record trade in SignalTrade: {rec_err}")
+
         except (MT5ConnectionError, MT5TradeError) as e:
             logger.error(f"Failed to fire trade for {pair_display}: {e}")
 
