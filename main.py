@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, status
 
 from config import get_settings
 from auth import ApiKeyAuthMiddleware
-from schemas import TradeRequest, TradeResponse, ErrorResponse
+from schemas import TradeRequest, TradeResponse, ErrorResponse, TradeInfo
 from mt5_service import (
     connect_mt5,
     disconnect_mt5,
@@ -21,10 +21,14 @@ from mt5_service import (
     is_margin_safe,
     is_drawdown_safe,
     is_equity_peak_safe,
+    active_trades,
+    register_trade,
+    unregister_trade,
     MT5ConnectionError,
     MT5TradeError,
 )
-from signal_watcher import start_watcher, stop_watcher, watcher_status, active_trades
+from signal_watcher import start_watcher, stop_watcher, watcher_status
+from trade_monitor import start_monitor, stop_monitor, monitor_status
 
 
 logging.basicConfig(
@@ -41,36 +45,7 @@ _manager_running = True
 SL_CHANGE_THRESHOLD = 5.0
 
 
-# ---------------------------------------------------------------------------
-# Trade execution + registration
-# ---------------------------------------------------------------------------
-
-def _register_trade(request: TradeRequest, order_id: int, executed_price: float) -> None:
-    """
-    Register a successfully executed trade into the active_trades registry
-    for the adaptive SL/TP manager to track.
-    """
-    active_trades[order_id] = {
-        "order_id": order_id,
-        "symbol": request.symbol,
-        "entry_price": executed_price,
-        "direction": request.order_type,
-        "sl": request.sl,
-        "tp1": request.tp1 if request.tp1 is not None else request.tp,
-        "tp_final": request.tp_final if request.tp_final is not None else request.tp,
-        "stage": "initial",
-    }
-    logger.info(
-        f"Registered trade {order_id} in active_trades | "
-        f"symbol={request.symbol} entry={executed_price} "
-        f"direction={request.order_type} tp1={active_trades[order_id]['tp1']} "
-        f"tp_final={active_trades[order_id]['tp_final']} stage=initial"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Adaptive SL/TP management
-# ---------------------------------------------------------------------------
+# ── Adaptive SL/TP management ───────────────────────────────────────────────
 
 def _get_current_price(symbol: str, direction: str) -> float | None:
     """Return current bid/ask for the given symbol based on direction."""
@@ -93,21 +68,21 @@ def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
         return sl > current + stops_level * mt5.symbol_info(symbol).point
 
 
-def _manage_buy_trade(trade: dict, position) -> None:
+def _manage_buy_trade(trade: TradeInfo, position) -> None:
     """
     Apply adaptive SL/TP logic for a BUY position.
 
-    Stages:
-      initial     → partial_lock (75% of move to TP1)
-      partial_lock → tp1_hit     (price reaches TP1)
-      tp1_hit     → trailing     (SL trails upward)
+    Phases:
+      phase1        → partial_lock  (75% of move to TP1, lock 20% as partial profit)
+      partial_lock → tp1_hit       (price reaches TP1, extend TP to TP_Final)
+      tp1_hit       → trailing      (SL trails upward, TP stays at TP_Final)
     """
-    symbol = trade["symbol"]
-    entry = trade["entry_price"]
-    tp1 = trade["tp1"]
-    tp_final = trade["tp_final"]
-    stage = trade["stage"]
-    order_id = trade["order_id"]
+    symbol = trade.symbol
+    entry = trade.entry_price
+    tp1 = trade.initial_tp1
+    tp_final = trade.tp2 if trade.tp2 is not None else tp1
+    phase = trade.phase
+    order_id = trade.order_id
 
     price = _get_current_price(symbol, "buy")
     if price is None:
@@ -116,61 +91,54 @@ def _manage_buy_trade(trade: dict, position) -> None:
     move_to_tp1 = tp1 - entry
     current_sl = position.sl
 
-    if stage == "initial":
-        # 75% of the way to TP1 → lock in 20% of the move as partial profit
+    if phase == "initial":
         locked_sl = entry + move_to_tp1 * 0.20
         threshold = entry + move_to_tp1 * 0.75
         if price >= threshold:
             if not _is_valid_sl(symbol, "buy", locked_sl):
-                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl} is too close to price {price}")
+                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl:.5f} too close to price {price:.5f}")
                 return
             modify_position_sl_tp(position.ticket, locked_sl, tp1)
-            active_trades[order_id]["sl"] = locked_sl
-            active_trades[order_id]["stage"] = "partial_lock"
-            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl} price={price}")
+            trade.phase = "partial_lock"
+            trade.current_sl = locked_sl
+            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl:.5f} price={price:.5f}")
 
-    elif stage == "partial_lock":
-        # Price reached TP1 → extend TP, lock partial profit via SL
+    elif phase == "partial_lock":
         if price >= tp1:
             locked_sl = entry + move_to_tp1 * 0.30
             if not _is_valid_sl(symbol, "buy", locked_sl):
-                logger.warning(f"Trade {order_id}: locked SL {locked_sl} is too close to price {price}")
+                logger.warning(f"Trade {order_id}: locked SL {locked_sl:.5f} too close to price {price:.5f}")
                 return
             modify_position_sl_tp(position.ticket, locked_sl, tp_final)
-            active_trades[order_id]["sl"] = locked_sl
-            active_trades[order_id]["stage"] = "tp1_hit"
-            logger.info(f"TP1 reached, extending TP | order_id={order_id} tp_final={tp_final}")
+            trade.phase = "tp1_hit"
+            trade.current_sl = locked_sl
+            trade.current_tp = tp_final
+            logger.info(f"TP1 reached, extending TP | order_id={order_id} tp_final={tp_final:.5f}")
 
-    elif stage == "tp1_hit":
-        # Trail SL upward: new_sl = current_price - 20% of total target move
+    elif phase == "tp1_hit":
         trailing_distance = (tp_final - entry) * 0.20
         new_sl = price - trailing_distance
         if new_sl > current_sl:
             if not _is_valid_sl(symbol, "buy", new_sl):
-                logger.warning(f"Trade {order_id}: trailing SL {new_sl} is too close to price {price}")
+                logger.warning(f"Trade {order_id}: trailing SL {new_sl:.5f} too close to price {price:.5f}")
                 return
             if abs(new_sl - current_sl) < SL_CHANGE_THRESHOLD:
                 return
             modify_position_sl_tp(position.ticket, new_sl, tp_final)
-            active_trades[order_id]["sl"] = new_sl
+            trade.current_sl = new_sl
             logger.info(f"Trailing SL updated | order_id={order_id} new_sl={new_sl:.5f} price={price:.5f}")
 
 
-def _manage_sell_trade(trade: dict, position) -> None:
+def _manage_sell_trade(trade: TradeInfo, position) -> None:
     """
     Apply adaptive SL/TP logic for a SELL position (mirror of BUY).
-
-    Stages:
-      initial     → partial_lock (75% of move to TP1, price moving DOWN)
-      partial_lock → tp1_hit     (price drops to or below TP1)
-      tp1_hit     → trailing     (SL trails downward)
     """
-    symbol = trade["symbol"]
-    entry = trade["entry_price"]
-    tp1 = trade["tp1"]
-    tp_final = trade["tp_final"]
-    stage = trade["stage"]
-    order_id = trade["order_id"]
+    symbol = trade.symbol
+    entry = trade.entry_price
+    tp1 = trade.initial_tp1
+    tp_final = trade.tp2 if trade.tp2 is not None else tp1
+    phase = trade.phase
+    order_id = trade.order_id
 
     price = _get_current_price(symbol, "sell")
     if price is None:
@@ -179,50 +147,48 @@ def _manage_sell_trade(trade: dict, position) -> None:
     move_to_tp1 = entry - tp1
     current_sl = position.sl
 
-    if stage == "initial":
-        # 75% of the way to TP1 (price dropping toward tp1) → lock in 20% of the move as partial profit
+    if phase == "initial":
         locked_sl = entry - move_to_tp1 * 0.20
         threshold = entry - move_to_tp1 * 0.75
         if price <= threshold:
             if not _is_valid_sl(symbol, "sell", locked_sl):
-                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl} is too close to price {price}")
+                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl:.5f} too close to price {price:.5f}")
                 return
             modify_position_sl_tp(position.ticket, locked_sl, tp1)
-            active_trades[order_id]["sl"] = locked_sl
-            active_trades[order_id]["stage"] = "partial_lock"
-            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl} price={price}")
+            trade.phase = "partial_lock"
+            trade.current_sl = locked_sl
+            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl:.5f} price={price:.5f}")
 
-    elif stage == "partial_lock":
-        # Price reached TP1 → extend TP, lock partial profit via SL
+    elif phase == "partial_lock":
         if price <= tp1:
             locked_sl = entry - move_to_tp1 * 0.30
             if not _is_valid_sl(symbol, "sell", locked_sl):
-                logger.warning(f"Trade {order_id}: locked SL {locked_sl} is too close to price {price}")
+                logger.warning(f"Trade {order_id}: locked SL {locked_sl:.5f} too close to price {price:.5f}")
                 return
             modify_position_sl_tp(position.ticket, locked_sl, tp_final)
-            active_trades[order_id]["sl"] = locked_sl
-            active_trades[order_id]["stage"] = "tp1_hit"
-            logger.info(f"TP1 reached, extending TP | order_id={order_id} tp_final={tp_final}")
+            trade.phase = "tp1_hit"
+            trade.current_sl = locked_sl
+            trade.current_tp = tp_final
+            logger.info(f"TP1 reached, extending TP | order_id={order_id} tp_final={tp_final:.5f}")
 
-    elif stage == "tp1_hit":
-        # Trail SL downward: new_sl = current_price + 20% of total target move
+    elif phase == "tp1_hit":
         trailing_distance = (entry - tp_final) * 0.20
         new_sl = price + trailing_distance
         if new_sl < current_sl:
             if not _is_valid_sl(symbol, "sell", new_sl):
-                logger.warning(f"Trade {order_id}: trailing SL {new_sl} is too close to price {price}")
+                logger.warning(f"Trade {order_id}: trailing SL {new_sl:.5f} too close to price {price:.5f}")
                 return
             if abs(new_sl - current_sl) < SL_CHANGE_THRESHOLD:
                 return
             modify_position_sl_tp(position.ticket, new_sl, tp_final)
-            active_trades[order_id]["sl"] = new_sl
+            trade.current_sl = new_sl
             logger.info(f"Trailing SL updated | order_id={order_id} new_sl={new_sl:.5f} price={price:.5f}")
 
 
 def manage_open_positions() -> None:
     """
     Background task: scan all open MT5 positions (magic=10001) and apply
-    adaptive SL/TP management via the active_trades registry.
+    adaptive SL/TP management via the shared active_trades registry.
     """
     settings = get_settings()
     positions = mt5.positions_get()
@@ -230,8 +196,8 @@ def manage_open_positions() -> None:
         logger.debug("No open positions found.")
         return
 
+    open_ticket_ids = set()
     for position in positions:
-        # Only manage positions placed by this system (magic == 10001)
         if position.magic != settings.magic_number:
             continue
 
@@ -239,11 +205,19 @@ def manage_open_positions() -> None:
         if trade is None:
             continue
 
-        direction = trade["direction"]
+        open_ticket_ids.add(position.ticket)
+
+        direction = trade.direction
         if direction == "buy":
             _manage_buy_trade(trade, position)
         elif direction == "sell":
             _manage_sell_trade(trade, position)
+
+    # Unregister any trades that are no longer open in MT5
+    stale = [tid for tid in active_trades if tid not in open_ticket_ids]
+    for tid in stale:
+        unregister_trade(tid)
+        logger.info(f"[{tid}] Removed from registry — position no longer open")
 
 
 def _trade_manager_loop() -> None:
@@ -265,9 +239,7 @@ def start_trade_manager() -> None:
     logger.info("Trade manager background thread launched.")
 
 
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
+# ── FastAPI app ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -280,9 +252,11 @@ async def lifespan(app: FastAPI):
     except MT5ConnectionError as e:
         logger.error(f"Failed to connect to MT5 on startup: {e}")
     start_trade_manager()
+    start_monitor()
     yield
     global _manager_running
     _manager_running = False
+    stop_monitor()
     logger.info("Shutting down...")
     disconnect_mt5()
 
@@ -334,12 +308,30 @@ async def watcher_status_endpoint():
     return watcher_status()
 
 
+@app.get("/monitor/status", tags=["Monitor"], response_model=dict)
+async def monitor_status_endpoint():
+    """Get the current trade monitor (adaptive SL/TP) status and tracked trades."""
+    return monitor_status()
+
+
 @app.get("/trades/active", tags=["Trading"], response_model=dict)
 async def active_trades_endpoint():
     """Return the current active_trades registry (adaptive SL/TP tracking)."""
     return {
         "active_trades": {
-            str(oid): info for oid, info in active_trades.items()
+            str(oid): {
+                "order_id": t.order_id,
+                "symbol": t.symbol,
+                "direction": t.direction,
+                "entry": t.entry_price,
+                "phase": t.phase,
+                "initial_sl": t.initial_sl,
+                "current_sl": t.current_sl,
+                "initial_tp1": t.initial_tp1,
+                "current_tp": t.current_tp,
+                "tp2": t.tp2,
+            }
+            for oid, t in active_trades.items()
         }
     }
 
@@ -354,20 +346,14 @@ async def trade(request: TradeRequest):
     """
     Execute a trade on MT5.
 
-    - **symbol**: Trading symbol (BTCUSD, USDJPY, GBPUSD)
+    - **symbol**: Trading symbol (BTCUSD, USDJPY, GBPUSD, XAUUSD)
     - **volume**: Trade volume in lots
     - **order_type**: 'buy' or 'sell'
     - **sl**: Stop Loss price
     - **tp**: Take Profit price (TP1 / initial TP)
     - **tp1**: First take profit target (optional, falls back to tp if omitted)
     - **tp_final**: Final take profit target (optional, falls back to tp if omitted)
-
-    A spacing check is applied before execution: a new trade is only allowed if
-    its entry price is sufficiently far from any existing open position of the
-    same symbol and direction.
     """
-    # Risk gate: equity peak → margin → daily drawdown.
-    # All three are checked before any spacing or trade execution logic.
     equity_ok, equity_info = is_equity_peak_safe()
     if not equity_ok:
         return TradeResponse(
@@ -394,8 +380,6 @@ async def trade(request: TradeRequest):
             message="Trade blocked: daily loss limit reached (50%)",
         )
 
-    # Spacing filter: prevent overtrading at similar price levels.
-    # Use current market tick as entry price proxy (what the order will actually fill at).
     entry_price = _get_current_price(request.symbol, request.order_type)
     if entry_price is None:
         raise HTTPException(
@@ -417,7 +401,20 @@ async def trade(request: TradeRequest):
 
     try:
         result = open_trade(request)
-        _register_trade(request, result.order_id, result.executed_price)
+        register_trade(
+            order_id=result.order_id,
+            symbol=request.symbol,
+            direction=request.order_type,
+            entry_price=result.executed_price,
+            initial_sl=request.sl,
+            initial_tp1=request.tp1 if request.tp1 is not None else request.tp,
+            tp2=request.tp_final if request.tp_final is not None else None,
+        )
+        logger.info(
+            f"Trade registered | order_id={result.order_id} symbol={request.symbol} "
+            f"direction={request.order_type} entry={result.executed_price} "
+            f"tp1={request.tp1 or request.tp} tp2={request.tp_final}"
+        )
         return result
 
     except MT5ConnectionError as e:

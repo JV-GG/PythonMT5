@@ -14,17 +14,14 @@ from mt5_service import (
     should_execute_trade,
     is_margin_safe,
     is_drawdown_safe,
+    active_trades,
+    register_trade,
     MT5ConnectionError,
     MT5TradeError,
 )
 from schemas import TradeRequest
 
 logger = logging.getLogger(__name__)
-
-# Shared trade registry for adaptive SL/TP management.
-# Key: order_id (int), Value: dict with trade metadata.
-# Fields: order_id, symbol, entry_price, direction, sl, tp1, tp_final, stage
-active_trades: dict[int, dict] = {}
 
 # Maps SignalTrade pair display names (from API response "pair" field) to MT5 symbols.
 # Key   = SignalTrade "pair" value, e.g. "BTC/USD"
@@ -37,7 +34,6 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
 }
 
 # Pair codes used in SignalTrade API URLs — e.g. "BTCUSD" → GET /api/signals/BTCUSD
-# These are the keys SignalTrade expects in the URL path.
 SIGNALTRADE_PAIR_CODES = list(PAIR_DISPLAY_TO_MT5.values())
 
 # Track last seen timestamp per pair display to avoid duplicate executions
@@ -50,18 +46,18 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
     SignalTrade response structure:
       {
-        "pair": "BTC/USD",           <- display name (key for PAIR_DISPLAY_TO_MT5)
+        "pair": "BTC/USD",
         "aiSignal": {
           "signal": "BUY" | "SELL" | "NEUTRAL",
-          "confidence": number,       <- must be >= 65 to execute (safety floor)
+          "confidence": number,
           "entry": number,
           "stopLoss": number,
-          "takeProfit1": number,   <- used as MT5 TP
-          "takeProfit": number,    <- ignored (MT5 only supports 1 TP)
+          "takeProfit1": number,
+          "takeProfit": number,    <- TP Final (TP2)
         }
       }
 
-    Returns None if the signal is NEUTRAL, invalid, or confidence < 65 (potential/neutral — do not execute).
+    Returns None if the signal is NEUTRAL, invalid, or confidence < 65.
     """
     ai = signal_data.get("aiSignal", {})
     direction: str = ai.get("signal", "NEUTRAL")
@@ -70,7 +66,6 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     if direction not in ("BUY", "SELL"):
         return None
 
-    # Block execution for low-confidence signals (< 65%)
     if confidence < 65:
         logger.info(
             f"Signal skipped — confidence {confidence}% is below 65% threshold "
@@ -87,47 +82,38 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         logger.warning(f"Invalid signal levels — entry={entry}, sl={sl}, tp1={tp1_value}")
         return None
 
-    # Resolve direction before directional validation
     resolved_direction = "buy" if direction == "BUY" else "sell"
     entry = float(entry)
     sl = float(sl)
     tp1_value = float(tp1_value)
     tp_final_value = float(tp_final_value) if tp_final_value else None
 
-    # Directional TP validation using entry as the market reference.
-    # For SELL: TP must be below entry (price falls to profit).
-    # For BUY:  TP must be above entry (price rises to profit).
+    # Directional TP validation
     if resolved_direction == "sell":
         if tp1_value >= entry:
             logger.warning(
-                f"Signal rejected — SELL TP {tp1_value} is not below entry {entry} "
-                f"(TP is in the loss direction). Skipping."
+                f"Signal rejected — SELL TP {tp1_value} is not below entry {entry}. Skipping."
+            )
+            return None
+        if tp_final_value is not None and tp_final_value >= entry:
+            logger.warning(
+                f"Signal rejected — SELL TP Final {tp_final_value} is not below entry {entry}. Skipping."
             )
             return None
     else:
         if tp1_value <= entry:
             logger.warning(
-                f"Signal rejected — BUY TP {tp1_value} is not above entry {entry} "
-                f"(TP is in the loss direction). Skipping."
+                f"Signal rejected — BUY TP {tp1_value} is not above entry {entry}. Skipping."
+            )
+            return None
+        if tp_final_value is not None and tp_final_value <= entry:
+            logger.warning(
+                f"Signal rejected — BUY TP Final {tp_final_value} is not above entry {entry}. Skipping."
             )
             return None
 
-    if tp_final_value is not None:
-        if resolved_direction == "sell":
-            if tp_final_value >= entry:
-                logger.warning(
-                    f"Signal rejected — SELL TP Final {tp_final_value} is not below entry {entry}. Skipping."
-                )
-                return None
-        else:
-            if tp_final_value <= entry:
-                logger.warning(
-                    f"Signal rejected — BUY TP Final {tp_final_value} is not above entry {entry}. Skipping."
-                )
-                return None
-
     settings = get_settings()
-    pair_display: str = signal_data.get("pair", "")  # e.g. "BTC/USD"
+    pair_display: str = signal_data.get("pair", "")
     mt5_symbol = PAIR_DISPLAY_TO_MT5.get(pair_display)
     if not mt5_symbol:
         logger.warning(f"Unknown pair display: {pair_display}")
@@ -147,13 +133,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
 
 async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, Any] | None:
-    """
-    Fetch the latest signal for a pair from SignalTrade.
-
-    Args:
-        client: httpx async client
-        pair_code: SignalTrade URL pair code (e.g. "BTCUSD" → GET /api/signals/BTCUSD)
-    """
+    """Fetch the latest signal for a pair from SignalTrade."""
     settings = get_settings()
     url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
     try:
@@ -169,25 +149,23 @@ async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, 
 
 async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     """Poll all pairs once and fire trades for any new BUY/SELL signals."""
+    settings = get_settings()
+
     for pair_code in SIGNALTRADE_PAIR_CODES:
-        # pair_code = "BTCUSD" (used in URL), also used to look up display name
-        # PAIR_DISPLAY_TO_MT5.values() = ["BTCUSD", "GBPUSD", "USDJPY"]
-        # PAIR_DISPLAY_TO_MT5 keys  = ["BTC/USD", "GBP/USD", "USD/JPY"]
         data = await _fetch_signal(client, pair_code)
         if data is None:
             continue
 
-        pair_display = data.get("pair", "")  # e.g. "BTC/USD"
+        pair_display = data.get("pair", "")
         timestamp = data.get("timestamp", "")
         confidence = data.get("aiSignal", {}).get("confidence", 0)
 
-        # Skip if already processed this signal
         if timestamp == _last_signals.get(pair_display):
             continue
 
         trade_req = _transform_signal(data)
         if trade_req is None:
-            continue  # NEUTRAL or invalid
+            continue
 
         _last_signals[pair_display] = timestamp
         logger.info(
@@ -198,7 +176,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         ai = data.get("aiSignal", {})
         signal_entry = ai.get("entry")
 
-        # Risk gate: margin and drawdown checks before anything else
+        # Risk gates
         if not is_margin_safe()[0]:
             logger.warning(
                 f"Trade blocked (margin) for {pair_display} | "
@@ -213,7 +191,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             )
             return
 
-        # Spacing filter: skip if price is too close to an existing position
+        # Spacing filter
         if signal_entry is not None:
             if not should_execute_trade(
                 trade_req.symbol,
@@ -230,23 +208,27 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         try:
             result = open_trade(trade_req)
             logger.info(f"Trade fired successfully — order_id={result.order_id}")
-            active_trades[result.order_id] = {
-                "order_id": result.order_id,
-                "symbol": trade_req.symbol,
-                "entry_price": result.executed_price,
-                "direction": trade_req.order_type,
-                "sl": trade_req.sl,
-                "tp1": trade_req.tp1 or trade_req.tp,
-                "tp_final": trade_req.tp_final or trade_req.tp,
-                "stage": "initial",
-            }
-            logger.info(f"Registered trade {result.order_id} in active_trades: stage=initial, tp1={trade_req.tp1 or trade_req.tp}, tp_final={trade_req.tp_final or trade_req.tp}")
 
-            # Record this trade in SignalTrade's consecutive-direction tracker
+            register_trade(
+                order_id=result.order_id,
+                symbol=trade_req.symbol,
+                direction=trade_req.order_type,
+                entry_price=result.executed_price,
+                initial_sl=trade_req.sl,
+                initial_tp1=trade_req.tp1 or trade_req.tp,
+                tp2=trade_req.tp_final,
+            )
+            logger.info(
+                f"Trade registered | order_id={result.order_id} symbol={trade_req.symbol} "
+                f"direction={trade_req.order_type} entry={result.executed_price} "
+                f"tp1={trade_req.tp1 or trade_req.tp} tp2={trade_req.tp_final}"
+            )
+
+            # Record in SignalTrade's consecutive-direction tracker
             try:
                 async with httpx.AsyncClient() as record_client:
                     await record_client.post(
-                        f"{settings.signaltade_url}/api/record-trade",
+                        f"{settings.signaltrade_url}/api/record-trade",
                         json={"symbol": pair_display, "direction": trade_req.order_type.upper()},
                         timeout=5.0,
                     )

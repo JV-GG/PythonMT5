@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: int = 60  # seconds between each poll
 
+    # Trade monitor (adaptive SL/TP)
+    monitor_poll_interval: int = 2   # seconds between each monitor cycle
+    monitor_tp1_proximity: float = 0.5  # how close price must be to TP1 to trigger Phase 2
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000

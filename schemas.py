@@ -1,8 +1,33 @@
 """
 Pydantic models for request/response validation.
 """
+from dataclasses import dataclass
 from pydantic import BaseModel, Field, field_validator, model_validator
 from config import get_settings
+
+
+# ── Trade info dataclass ────────────────────────────────────────────────────────
+# Single source of truth for all trade metadata used by the adaptive SL/TP
+# managers. Lives here so both the threaded manager (main.py) and the async
+# monitor (trade_monitor.py) share the same type without circular imports.
+
+PHASE_1 = "phase1"
+PHASE_2_TRAILING = "phase2_trailing"
+
+
+@dataclass
+class TradeInfo:
+    order_id: int
+    symbol: str
+    direction: str            # "buy" or "sell"
+    entry_price: float
+    initial_sl: float
+    initial_tp1: float
+    tp2: float | None = None
+    phase: str = PHASE_1
+    current_sl: float = 0.0
+    current_tp: float = 0.0
+    triggered_at: float = 0.0
 
 
 class TradeRequest(BaseModel):

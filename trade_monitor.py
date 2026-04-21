@@ -1,68 +1,59 @@
 """
 Trade Monitor — watches open MT5 positions and applies adaptive TP/SL trailing.
 
-Phase 1: Normal trade with initial SL and TP1.
-Phase 2 (Triggered when price approaches TP1):
+Phase 1 (initial): Normal trade with initial SL and TP1. Waits for Phase 2 trigger.
+Phase 2 (trailing): Triggered when price approaches TP1 by monitor_tp1_proximity.
   - TP moves to TP2 (if set), then continues trailing upward (BUY) or downward (SELL).
   - SL moves upward only (BUY) or downward only (SELL), locking in profit.
   - Once triggered, SL and TP both follow price — never reverse.
 
-The monitor reads open positions directly from MT5 terminal each poll cycle,
-so it works for any trade — whether opened via the watcher or the /trade endpoint.
+The monitor reads open positions directly from MT5 each poll cycle, so it works
+for any trade — whether opened via the watcher, the /trade endpoint, or the
+threaded manager in main.py.  All state lives in the shared `active_trades`
+registry (mt5_service.py).
+
+Started by main.py on app startup. Stops on app shutdown.
 """
 import asyncio
 import logging
-from dataclasses import dataclass, field
-from typing import Any
 
 import MetaTrader5 as mt5
 
 from config import get_settings
-from schemas import TradeInfo
+from schemas import PHASE_1, PHASE_2_TRAILING, TradeInfo
+from mt5_service import active_trades, modify_position_sl_tp, unregister_trade
 
 logger = logging.getLogger(__name__)
 
 
-# ── Phase constants ────────────────────────────────────────────────────────────
+# ── MT5 helpers ──────────────────────────────────────────────────────────────
 
-PHASE_1 = "phase1"
-PHASE_2_TRAILING = "phase2_trailing"
-
-
-# ── In-memory trade registry ───────────────────────────────────────────────────
-# Key = order_id. Value = TradeInfo.
-# This registry is used to track extra metadata (tp2, phase, etc.) per trade.
-_trades: dict[int, TradeInfo] = {}
-
-
-# ── MT5 helpers ────────────────────────────────────────────────────────────────
-
-def _get_open_positions() -> list[dict[str, Any]]:
+def _get_open_positions() -> list[dict]:
     """Fetch all open positions from MT5."""
     if not mt5.terminal_info():
         return []
     positions = mt5.positions_get()
     if positions is None:
         return []
-    result = []
-    for p in positions:
-        result.append({
-            "ticket":         p.ticket,
-            "symbol":         p.symbol,
-            "type":           "buy" if p.type == mt5.POSITION_TYPE_BUY else "sell",
-            "volume":         p.volume,
-            "price_open":     p.price_open,
-            "price_current":  p.price_current,
-            "sl":             p.sl,
-            "tp":             p.tp,
-            "profit":         p.profit,
-            "comment":        p.comment or "",
-            "magic":          p.magic,
-        })
-    return result
+    return [
+        {
+            "ticket":        p.ticket,
+            "symbol":        p.symbol,
+            "type":          "buy" if p.type == mt5.POSITION_TYPE_BUY else "sell",
+            "volume":        p.volume,
+            "price_open":    p.price_open,
+            "price_current": p.price_current,
+            "sl":            p.sl,
+            "tp":            p.tp,
+            "profit":        p.profit,
+            "comment":       p.comment or "",
+            "magic":         p.magic,
+        }
+        for p in positions
+    ]
 
 
-def _get_tick(symbol: str) -> dict[str, float] | None:
+def _get_tick(symbol: str) -> dict | None:
     """Get current bid/ask for a symbol. Returns None on failure."""
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
@@ -70,24 +61,100 @@ def _get_tick(symbol: str) -> dict[str, float] | None:
     return {"bid": tick.bid, "ask": tick.ask}
 
 
-# ── Modification ────────────────────────────────────────────────────────────────
+# ── Phase 2 triggering ────────────────────────────────────────────────────────
 
-def _modify_position(
-    ticket: int,
-    new_sl: float,
-    new_tp: float,
-) -> bool:
+def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity: float) -> bool:
+    """Return True if the current market price is within `proximity` of TP1."""
+    tick = _get_tick(symbol)
+    if tick is None:
+        return False
+    price = tick["ask"] if direction == "buy" else tick["bid"]
+    return abs(price - tp1) <= proximity
+
+
+# ── Position processing ──────────────────────────────────────────────────────
+
+def _process_one_position(pos: dict) -> None:
+    """
+    Evaluate a single registered trade and apply Phase 2 adaptive TP/SL if needed.
+    Reads/writes from the shared `active_trades` registry.
+    """
+    ticket = pos["ticket"]
+    symbol = pos["symbol"]
+    direction = pos["type"]         # "buy" or "sell"
+    current_price = pos["price_current"]
+    is_buy = direction == "buy"
+
+    trade = active_trades.get(ticket)
+    if trade is None:
+        return
+
+    # ── Phase 1: check if Phase 2 should trigger ──────────────────────────────
+    if trade.phase == PHASE_1:
+        if trade.tp2 is None:
+            # No TP2 configured — Phase 2 trailing doesn't apply
+            return
+
+        settings = get_settings()
+        if _is_price_near_tp1(symbol, direction, trade.initial_tp1, settings.monitor_tp1_proximity):
+            # ── Trigger Phase 2 ────────────────────────────────────────────────
+            logger.info(
+                f"[{ticket}] Phase 2 triggered | {direction.upper()} {symbol} "
+                f"price={current_price:.5f} near TP1={trade.initial_tp1:.5f}"
+            )
+            # Initial Phase 2 SL = TP1 (locks minimum profit)
+            new_sl = trade.initial_tp1
+            new_tp = trade.tp2
+
+            if _modify_position(ticket, new_sl, new_tp):
+                trade.phase = PHASE_2_TRAILING
+                trade.current_sl = new_sl
+                trade.current_tp = new_tp
+                trade.triggered_at = current_price
+            return
+
+    # ── Phase 2: trailing TP and SL ─────────────────────────────────────────
+    if trade.phase == PHASE_2_TRAILING:
+        tick = _get_tick(symbol)
+        if tick is None:
+            return
+        market_price = tick["ask"] if is_buy else tick["bid"]
+
+        new_tp = trade.current_tp
+        new_sl = trade.current_sl
+
+        if is_buy:
+            if market_price > trade.current_tp:
+                new_tp = market_price
+            if market_price > trade.current_sl:
+                new_sl = market_price
+        else:  # sell
+            if market_price < trade.current_tp:
+                new_tp = market_price
+            if market_price < trade.current_sl:
+                new_sl = market_price
+
+        if new_tp != trade.current_tp or new_sl != trade.current_sl:
+            if _modify_position(ticket, new_sl, new_tp):
+                logger.info(
+                    f"[{ticket}] Trailing update | {direction.upper()} {symbol} "
+                    f"new_sl={new_sl:.5f} new_tp={new_tp:.5f}"
+                )
+                trade.current_tp = new_tp
+                trade.current_sl = new_sl
+
+
+def _modify_position(ticket: int, new_sl: float, new_tp: float) -> bool:
     """
     Send a position modification request to MT5.
     Returns True on success, False on failure.
     """
     request = {
-        "action":     mt5.TRADE_ACTION_SLTP,
-        "position":   ticket,
-        "sl":         new_sl,
-        "tp":         new_tp,
-        "magic":      get_settings().magic_number,
-        "type_time":  mt5.ORDER_TIME_GTC,
+        "action":    mt5.TRADE_ACTION_SLTP,
+        "position":  ticket,
+        "sl":        new_sl,
+        "tp":        new_tp,
+        "type_time": mt5.ORDER_TIME_GTC,
     }
     result = mt5.order_send(request)
     if result is None:
@@ -102,119 +169,12 @@ def _modify_position(
     return True
 
 
-# ── Core trailing logic ────────────────────────────────────────────────────────
-
-def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity: float) -> bool:
-    """Return True if the current market price is within `proximity` of TP1."""
-    tick = _get_tick(symbol)
-    if tick is None:
-        return False
-    price = tick["ask"] if direction == "buy" else tick["bid"]
-    return abs(price - tp1) <= proximity
-
-
-def _trailing_step(symbol: str, direction: str) -> float:
-    """
-    Compute how far to step TP when in Phase 2 trailing mode.
-    For now: mirror whatever the current price is away from the last TP.
-    This keeps TP always just above/below current price.
-    """
-    tick = _get_tick(symbol)
-    if tick is None:
-        return 0.0
-    return tick["ask"] if direction == "buy" else tick["bid"]
-
-
-def _process_one_position(pos: dict[str, Any]) -> None:
-    """
-    Evaluate a single open position and apply adaptive TP/SL if needed.
-    Modifies MT5 position in-place via _modify_position.
-    """
-    ticket = pos["ticket"]
-    symbol = pos["symbol"]
-    direction = pos["type"]          # "buy" or "sell"
-    current_price = pos["price_current"]
-
-    settings = get_settings()
-    is_buy = direction == "buy"
-
-    # ── Phase 1: check if we should trigger Phase 2 ──────────────────────────
-    info = _trades.get(ticket)
-
-    if info is None:
-        # Not registered — create a Phase 1 shadow record.
-        # We still want to monitor it for Phase 2 triggering if tp2 is set on MT5.
-        # Infer phase from current TP vs MT5 SL to guess state.
-        # If TP on MT5 equals the original TP1 in the comment... we keep Phase 1.
-        # For non-registered trades, skip adaptive logic unless explicitly added.
-        return
-
-    if info.phase == PHASE_1:
-        if info.tp2 is None:
-            # No TP2 configured — nothing to trail
-            return
-
-        if _is_price_near_tp1(symbol, direction, info.initial_tp1, settings.monitor_tp1_proximity):
-            # ── Trigger Phase 2 ────────────────────────────────────────────────
-            logger.info(
-                f"[{ticket}] Phase 2 triggered | {direction.upper()} {symbol} "
-                f"price={current_price:.5f} near TP1={info.initial_tp1:.5f}"
-            )
-            # Initial Phase 2 SL = TP1 (locks minimum profit)
-            new_sl = info.initial_tp1
-            new_tp = info.tp2 if is_buy else info.tp2
-
-            if _modify_position(ticket, new_sl, new_tp):
-                info.phase = PHASE_2_TRAILING
-                info.current_sl = new_sl
-                info.current_tp = new_tp
-                info.triggered_at = current_price
-            return
-
-    elif info.phase == PHASE_2_TRAILING:
-        # ── Phase 2: trailing TP and SL ─────────────────────────────────────
-        # Current market price
-        tick = _get_tick(symbol)
-        if tick is None:
-            return
-        market_price = tick["ask"] if is_buy else tick["bid"]
-
-        # Proposed new TP = market price
-        proposed_tp = market_price
-        # Proposed new SL = market price (full lock)
-        proposed_sl = market_price
-
-        new_tp = info.current_tp
-        new_sl = info.current_sl
-
-        if is_buy:
-            if proposed_tp > info.current_tp:
-                new_tp = proposed_tp
-            if proposed_sl > info.current_sl:
-                new_sl = proposed_sl
-        else:  # sell
-            if proposed_tp < info.current_tp:
-                new_tp = proposed_tp
-            if proposed_sl < info.current_sl:
-                new_sl = proposed_sl
-
-        if new_tp != info.current_tp or new_sl != info.current_sl:
-            if _modify_position(ticket, new_sl, new_tp):
-                logger.info(
-                    f"[{ticket}] Trailing update | {direction.upper()} {symbol} "
-                    f"new_sl={new_sl:.5f} new_tp={new_tp:.5f}"
-                )
-                info.current_tp = new_tp
-                info.current_sl = new_sl
-        # else: no change needed — price moved against us or hasn't moved enough
-
-
-# ── Monitor loop ───────────────────────────────────────────────────────────────
+# ── Monitor loop ─────────────────────────────────────────────────────────────
 
 async def _monitor_loop() -> None:
     """
-    Background asyncio loop that polls open MT5 positions every poll_interval seconds
-    and applies adaptive TP/SL trailing.
+    Background asyncio loop that polls open MT5 positions every monitor_poll_interval
+    seconds and applies adaptive TP/SL trailing via the shared active_trades registry.
     """
     settings = get_settings()
     interval = settings.monitor_poll_interval
@@ -230,6 +190,17 @@ async def _monitor_loop() -> None:
             _sync_closed_positions(open_tickets)
         except Exception:
             logger.exception("Unexpected error in monitor loop")
+
+
+def _sync_closed_positions(open_tickets: set[int]) -> None:
+    """
+    Remove any registered trades that are no longer open in MT5.
+    Call this at the end of each monitor cycle.
+    """
+    stale = [tid for tid in active_trades if tid not in open_tickets]
+    for tid in stale:
+        unregister_trade(tid)
+        logger.info(f"[{tid}] Removed from monitor — position no longer open")
 
 
 _monitor_task: asyncio.Task | None = None
@@ -259,71 +230,20 @@ def monitor_status() -> dict:
     running = _monitor_task is not None and not _monitor_task.done()
     trades_list = [
         {
-            "order_id":   t.order_id,
-            "symbol":     t.symbol,
-            "direction":  t.direction,
-            "entry":      t.entry_price,
-            "phase":      t.phase,
-            "sl":         t.current_sl,
-            "tp":         t.current_tp,
-            "tp2":        t.tp2,
+            "order_id":    t.order_id,
+            "symbol":      t.symbol,
+            "direction":   t.direction,
+            "entry":       t.entry_price,
+            "phase":       t.phase,
+            "initial_sl":  t.initial_sl,
+            "current_sl":  t.current_sl,
+            "initial_tp1": t.initial_tp1,
+            "current_tp":  t.current_tp,
+            "tp2":         t.tp2,
         }
-        for t in _trades.values()
+        for t in active_trades.values()
     ]
     return {
         "running": running,
         "tracked_trades": trades_list,
     }
-
-
-# ── Trade registration ──────────────────────────────────────────────────────────
-
-def register_trade(
-    order_id: int,
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    initial_sl: float,
-    initial_tp1: float,
-    tp2: float | None = None,
-) -> None:
-    """
-    Register an open trade with the monitor so it can be trailed.
-    Call this after a trade is successfully opened.
-    """
-    _trades[order_id] = TradeInfo(
-        order_id=order_id,
-        symbol=symbol,
-        direction=direction,
-        entry_price=entry_price,
-        initial_sl=initial_sl,
-        initial_tp1=initial_tp1,
-        tp2=tp2,
-        phase=PHASE_1,
-        current_sl=initial_sl,
-        current_tp=initial_tp1,
-    )
-    logger.info(
-        f"[{order_id}] Trade registered for monitoring | "
-        f"{direction.upper()} {symbol} entry={entry_price} "
-        f"sl={initial_sl} tp1={initial_tp1} tp2={tp2}"
-    )
-
-
-def unregister_trade(order_id: int) -> bool:
-    """
-    Remove a trade from the monitor (e.g. when it is closed).
-    Returns True if the trade was removed, False if it wasn't tracked.
-    """
-    return _trades.pop(order_id, None) is not None
-
-
-def _sync_closed_positions(open_tickets: set[int]) -> None:
-    """
-    Remove any registered trades that are no longer open in MT5.
-    Call this at the end of each monitor cycle.
-    """
-    stale = [tid for tid in _trades if tid not in open_tickets]
-    for tid in stale:
-        _trades.pop(tid, None)
-        logger.info(f"[{tid}] Removed from monitor — position no longer open")

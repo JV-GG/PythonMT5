@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from config import get_settings
-from schemas import TradeRequest, TradeResponse
+from schemas import TradeInfo, PHASE_1, TradeRequest, TradeResponse
 
 
 logger = logging.getLogger(__name__)
@@ -289,7 +289,7 @@ def should_execute_trade(
     symbol: str,
     direction: str,
     new_entry_price: float,
-    active_trades_ref: dict[int, dict],
+    active_trades_ref: dict[int, TradeInfo],
 ) -> bool:
     """
     Decide whether a new trade should be allowed based on ATR-based dynamic
@@ -314,9 +314,9 @@ def should_execute_trade(
 
     # 1. Check active_trades registry (preferred — no MT5 round-trip)
     for order_id, trade in active_trades_ref.items():
-        if trade["symbol"] != symbol or trade["direction"] != direction:
+        if trade.symbol != symbol or trade.direction != direction:
             continue
-        existing_price = trade["entry_price"]
+        existing_price = trade.entry_price
         if direction == "buy":
             if new_entry_price <= existing_price - min_dist:
                 logger.info(
@@ -563,6 +563,51 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
         f"drawdown={drawdown:.2%}"
     )
     return True, info
+
+
+# ── Trade registry ──────────────────────────────────────────────────────────────
+# Single source of truth for all open trade metadata used by the adaptive SL/TP
+# managers (threaded manager in main.py and async monitor in trade_monitor.py).
+# Key: order_id (int), Value: TradeInfo
+
+from schemas import TradeInfo, PHASE_1
+
+active_trades: dict[int, TradeInfo] = {}
+
+
+def register_trade(
+    order_id: int,
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    initial_sl: float,
+    initial_tp1: float,
+    tp2: float | None = None,
+) -> None:
+    """
+    Register an open trade so the adaptive SL/TP managers can track it.
+    Call this after a trade is successfully opened.
+    """
+    active_trades[order_id] = TradeInfo(
+        order_id=order_id,
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        initial_sl=initial_sl,
+        initial_tp1=initial_tp1,
+        tp2=tp2,
+        phase=PHASE_1,
+        current_sl=initial_sl,
+        current_tp=initial_tp1,
+    )
+
+
+def unregister_trade(order_id: int) -> bool:
+    """
+    Remove a trade from the registry (e.g. when it is closed).
+    Returns True if the trade was removed, False if it wasn't tracked.
+    """
+    return active_trades.pop(order_id, None) is not None
 
 
 def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> dict:
