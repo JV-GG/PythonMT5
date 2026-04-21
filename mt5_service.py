@@ -92,6 +92,23 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     if tick is None:
         raise MT5TradeError(f"Failed to get tick data for '{symbol}'.")
 
+    # ── Final pre-execution sanity check ─────────────────────────────────────────
+    # Fail fast with a clear message rather than sending garbage to MT5.
+    if request.order_type == "buy":
+        if not (request.sl < tick.ask < request.tp):
+            raise MT5TradeError(
+                f"Pre-execution sanity failed for BUY {symbol}: "
+                f"SL={request.sl} must be < Ask={tick.ask:.5f} must be < TP={request.tp}. "
+                f"Likely cause: SignalTrade sent SL/TP as pips instead of price levels."
+            )
+    else:
+        if not (request.tp < tick.bid < request.sl):
+            raise MT5TradeError(
+                f"Pre-execution sanity failed for SELL {symbol}: "
+                f"TP={request.tp} must be < Bid={tick.bid:.5f} must be < SL={request.sl}. "
+                f"Likely cause: SignalTrade sent SL/TP as pips instead of price levels."
+            )
+
     # ── Spread-aware SL / TP adjustment ─────────────────────────────────────
     # MT5 stores SL/TP as absolute price levels that are checked against:
     #   BUY  position → SL/TP checked against BID  (spread benefits BUY TP, hurts BUY SL)

@@ -33,11 +33,91 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
     "XAU/USD": "XAUUSD",
 }
 
+# JPY pairs trade in 0.01 increments (1 pip = 0.01); non-JPY in 0.0001 (1 pip = 0.0001).
+_JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "AUDJPY", "CADJPY", "CHFJPY"}
+
+
+def _is_sane_levels(entry: float, sl: float, tp: float, direction: str) -> bool:
+    """
+    Returns True when SL/TP are on the correct sides of entry for the given direction.
+    BUY  → SL < entry < TP
+    SELL → TP < entry < SL
+    """
+    if direction == "buy":
+        return sl < entry < tp
+    else:
+        return tp < entry < sl
+
+
+def _correct_levels_from_pips(
+    entry: float, sl: float, tp: float, direction: str, symbol: str
+) -> tuple[float, float]:
+    """
+    Detects when SignalTrade sent SL/TP as raw pips instead of price levels, computes
+    the intended distance in pips, and returns corrected absolute price levels.
+
+    Heuristic: if the raw levels are insane (SL on wrong side of entry), treat the SL
+    value as a pip distance, convert to a price level, then derive TP at 1.5× risk.
+    """
+    pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
+    sl_dist_pips = round(abs(sl) / pip)
+    tp_dist_pips = round(abs(tp) / pip)
+
+    if direction == "buy":
+        corrected_sl = round(entry - sl_dist_pips * pip, 5)
+        corrected_tp = round(entry + max(tp_dist_pips, round(sl_dist_pips * 1.5)) * pip, 5)
+    else:
+        corrected_sl = round(entry + sl_dist_pips * pip, 5)
+        corrected_tp = round(entry - max(tp_dist_pips, round(sl_dist_pips * 1.5)) * pip, 5)
+
+    logger.warning(
+        f"Sanity correction | symbol={symbol} entry={entry} "
+        f"direction={direction} raw_sl={sl} raw_tp={tp} "
+        f"→ corrected_sl={corrected_sl} corrected_tp={corrected_tp} "
+        f"(detected ~{sl_dist_pips} pips / {tp_dist_pips} pips)"
+    )
+    return corrected_sl, corrected_tp
+
 # Pair codes used in SignalTrade API URLs — e.g. "BTCUSD" → GET /api/signals/BTCUSD
 SIGNALTRADE_PAIR_CODES = list(PAIR_DISPLAY_TO_MT5.values())
 
 # Track last seen timestamp per pair display to avoid duplicate executions
 _last_signals: dict[str, str] = {}
+
+
+def _is_confidence_acceptable(
+    confidence: float,
+    signal_data: dict[str, Any],
+) -> tuple[bool, str]:
+    """
+    Apply SignalTrade's session-aware confidence floors.
+
+    Session quality → confirmed floor / potential floor:
+      optimal/good  → 55% / 65%
+      poor (Asian)  → 70% / 80%
+
+    Returns (True, reason) if signal should execute, (False, reason) if blocked.
+    """
+    session_info = signal_data.get("sessionInfo") or {}
+    quality = session_info.get("quality", "good")
+
+    if quality == "poor":
+        confirmed_floor = 70
+        potential_floor = 80
+        session_name = session_info.get("name", "Asian / Off-hours")
+    else:
+        confirmed_floor = 55
+        potential_floor = 65
+        session_name = session_info.get("name", "Active session")
+
+    if confidence >= confirmed_floor:
+        return True, f"{session_name} — confirmed, confidence {confidence}% >= {confirmed_floor}%"
+    if confidence >= potential_floor:
+        return True, f"{session_name} — potential, confidence {confidence}% >= {potential_floor}%"
+    return False, (
+        f"{session_name} — confidence {confidence}% below floors "
+        f"(confirmed >= {confirmed_floor}%, potential >= {potential_floor}%)"
+    )
 
 
 def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
@@ -47,6 +127,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     SignalTrade response structure:
       {
         "pair": "BTC/USD",
+        "sessionInfo": { "name": str, "quality": "optimal"|"good"|"poor" },
         "aiSignal": {
           "signal": "BUY" | "SELL" | "NEUTRAL",
           "confidence": number,
@@ -57,7 +138,9 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         }
       }
 
-    Returns None if the signal is NEUTRAL, invalid, or confidence < 65.
+    Returns None if the signal is NEUTRAL, invalid, or fails the
+    session-aware confidence gate (optimal/good sessions: confirmed >= 55%,
+    potential >= 65%; poor/Asian sessions: confirmed >= 70%, potential >= 80%).
     """
     ai = signal_data.get("aiSignal", {})
     direction: str = ai.get("signal", "NEUTRAL")
@@ -66,11 +149,9 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     if direction not in ("BUY", "SELL"):
         return None
 
-    if confidence < 65:
-        logger.info(
-            f"Signal skipped — confidence {confidence}% is below 65% threshold "
-            f"(potential/neutral). Direction: {direction}"
-        )
+    acceptable, reason = _is_confidence_acceptable(confidence, signal_data)
+    if not acceptable:
+        logger.info(f"Signal skipped — {reason}")
         return None
 
     entry = ai.get("entry")
@@ -112,12 +193,30 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             )
             return None
 
+    # Resolve symbol mappings early — needed for the sanity check below
     settings = get_settings()
     pair_display: str = signal_data.get("pair", "")
     mt5_symbol = PAIR_DISPLAY_TO_MT5.get(pair_display)
     if not mt5_symbol:
         logger.warning(f"Unknown pair display: {pair_display}")
         return None
+
+    # Sanity-check SL/TP: detect and auto-correct pips-vs-price confusion from SignalTrade
+    if not _is_sane_levels(entry, sl, tp1_value, resolved_direction):
+        logger.warning(
+            f"Insane SL/TP detected for {pair_display} — SL={sl} TP={tp1_value} "
+            f"direction={resolved_direction} entry={entry}. Attempting pips→price correction."
+        )
+        sl, tp1_value = _correct_levels_from_pips(
+            entry, sl, tp1_value, resolved_direction, mt5_symbol
+        )
+        # If still insane after correction, abort — don't send garbage to MT5
+        if not _is_sane_levels(entry, sl, tp1_value, resolved_direction):
+            logger.error(
+                f"Correction failed for {pair_display} — SL/TP still insane "
+                f"after correction. Skipping trade."
+            )
+            return None
 
     volume = settings.xauusd_volume if mt5_symbol in ("XAUUSD", "BTCUSD") else settings.default_volume
 
@@ -167,9 +266,11 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if trade_req is None:
             continue
 
+        session = data.get("sessionInfo") or {}
         _last_signals[pair_display] = timestamp
         logger.info(
             f"New {trade_req.order_type.upper()} signal for {pair_display} | "
+            f"session={session.get('name', 'unknown')} ({session.get('quality', 'unknown')}) | "
             f"confidence={confidence}% | sl={trade_req.sl} tp={trade_req.tp}"
         )
 
