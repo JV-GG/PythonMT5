@@ -1,7 +1,7 @@
 """
 Pydantic models for request/response validation.
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from config import get_settings
 
 
@@ -32,6 +32,29 @@ class TradeRequest(BaseModel):
                 f"Symbol '{v}' not allowed. Supported: {settings.allowed_symbols}"
             )
         return normalized
+
+    @model_validator(mode="after")
+    def validate_tp_direction(self) -> "TradeRequest":
+        """
+        Reject trades where TP is on the wrong side of entry relative to direction.
+
+        Since market price isn't available at Pydantic parse time, the SL is used
+        as a direction proxy: for a BUY, TP > SL; for a SELL, TP < SL.
+        This guarantees the TP is in the profit direction and not guaranteed loss.
+        """
+        if self.order_type == "sell":
+            if self.tp >= self.sl:
+                raise ValueError(
+                    f"Take Profit ({self.tp}) must be below Stop Loss ({self.sl}) "
+                    f"for a SELL order. The TP is currently in the loss direction."
+                )
+        else:
+            if self.tp <= self.sl:
+                raise ValueError(
+                    f"Take Profit ({self.tp}) must be above Stop Loss ({self.sl}) "
+                    f"for a BUY order. The TP is currently in the loss direction."
+                )
+        return self
 
 
 class TradeResponse(BaseModel):

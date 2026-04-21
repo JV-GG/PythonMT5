@@ -87,6 +87,45 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         logger.warning(f"Invalid signal levels — entry={entry}, sl={sl}, tp1={tp1_value}")
         return None
 
+    # Resolve direction before directional validation
+    resolved_direction = "buy" if direction == "BUY" else "sell"
+    entry = float(entry)
+    sl = float(sl)
+    tp1_value = float(tp1_value)
+    tp_final_value = float(tp_final_value) if tp_final_value else None
+
+    # Directional TP validation using entry as the market reference.
+    # For SELL: TP must be below entry (price falls to profit).
+    # For BUY:  TP must be above entry (price rises to profit).
+    if resolved_direction == "sell":
+        if tp1_value >= entry:
+            logger.warning(
+                f"Signal rejected — SELL TP {tp1_value} is not below entry {entry} "
+                f"(TP is in the loss direction). Skipping."
+            )
+            return None
+    else:
+        if tp1_value <= entry:
+            logger.warning(
+                f"Signal rejected — BUY TP {tp1_value} is not above entry {entry} "
+                f"(TP is in the loss direction). Skipping."
+            )
+            return None
+
+    if tp_final_value is not None:
+        if resolved_direction == "sell":
+            if tp_final_value >= entry:
+                logger.warning(
+                    f"Signal rejected — SELL TP Final {tp_final_value} is not below entry {entry}. Skipping."
+                )
+                return None
+        else:
+            if tp_final_value <= entry:
+                logger.warning(
+                    f"Signal rejected — BUY TP Final {tp_final_value} is not above entry {entry}. Skipping."
+                )
+                return None
+
     settings = get_settings()
     pair_display: str = signal_data.get("pair", "")  # e.g. "BTC/USD"
     mt5_symbol = PAIR_DISPLAY_TO_MT5.get(pair_display)
@@ -99,11 +138,11 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     return TradeRequest(
         symbol=mt5_symbol,
         volume=volume,
-        order_type="buy" if direction == "BUY" else "sell",
-        sl=float(sl),
-        tp=float(tp1_value),        # MT5 TP = TP1
-        tp1=float(tp1_value),
-        tp_final=float(tp_final_value) if tp_final_value else None,
+        order_type=resolved_direction,
+        sl=sl,
+        tp=tp1_value,
+        tp1=tp1_value,
+        tp_final=tp_final_value,
     )
 
 
