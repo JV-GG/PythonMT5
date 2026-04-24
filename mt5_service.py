@@ -84,10 +84,6 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     if not mt5.symbol_select(symbol):
         raise MT5TradeError(f"Symbol '{symbol}' not found or cannot be selected in MT5.")
 
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        raise MT5TradeError(f"Failed to get symbol info for '{symbol}'.")
-
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         raise MT5TradeError(f"Failed to get tick data for '{symbol}'.")
@@ -109,34 +105,6 @@ def open_trade(request: TradeRequest) -> TradeResponse:
                 f"Likely cause: SignalTrade sent SL/TP as pips instead of price levels."
             )
 
-    # ── Spread-aware SL / TP adjustment ─────────────────────────────────────
-    # MT5 stores SL/TP as absolute price levels that are checked against:
-    #   BUY  position → SL/TP checked against BID  (spread benefits BUY TP, hurts BUY SL)
-    #   SELL position → SL/TP checked against BID  (spread hurts  SELL TP, benefits SELL SL)
-    # To ensure the *intended* P&L is delivered, we adjust:
-    #   BUY  SL: widen upward by spread  (real stop = intended stop + spread pts)
-    #   SELL TP: tighten by spread      (after spread deduction, you keep intended reward)
-    spread = symbol_info.spread
-    spread_multiplier = settings.spread_buffer_multiplier
-    buffer_pts = spread * spread_multiplier
-
-    adj_sl = request.sl
-    adj_tp = request.tp
-    if buffer_pts > 0:
-        if request.order_type == "buy":
-            # Widen SL for BUY: protects against spread eating into stop loss
-            adj_sl = request.sl + buffer_pts
-        else:
-            # Tighten TP for SELL: compensate for spread deducted at TP execution
-            adj_tp = request.tp - buffer_pts
-
-    if buffer_pts > 0:
-        logger.info(
-            f"Spread buffer | symbol={symbol} spread={spread} pts "
-            f"buffer={buffer_pts:.1f} (multiplier={spread_multiplier}x) "
-            f"sl: {request.sl} -> {adj_sl} | tp: {request.tp} -> {adj_tp}"
-        )
-
     action_type = mt5.TRADE_ACTION_DEAL
     order_type = mt5.ORDER_TYPE_BUY if request.order_type == "buy" else mt5.ORDER_TYPE_SELL
     price = tick.ask if request.order_type == "buy" else tick.bid
@@ -148,8 +116,8 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         "volume": request.volume,
         "type": order_type,
         "price": price,
-        "sl": adj_sl,
-        "tp": adj_tp,
+        "sl": request.sl,
+        "tp": request.tp,
         "deviation": settings.default_deviation,
         "magic": settings.magic_number,
         "comment": settings.default_comment,
@@ -159,8 +127,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
 
     logger.info(
         f"Executing trade | symbol={symbol} volume={request.volume} "
-        f"type={request.order_type} price={price} sl={adj_sl} tp={adj_tp}"
-        f" (spread_buffer={buffer_pts:.1f} pts)"
+        f"type={request.order_type} price={price} sl={request.sl} tp={request.tp}"
     )
 
     result = mt5.order_send(trade_request)
