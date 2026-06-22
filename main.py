@@ -346,7 +346,7 @@ async def trade(request: TradeRequest):
     """
     Execute a trade on MT5.
 
-    - **symbol**: Trading symbol (BTCUSD, USDJPY, GBPUSD, XAUUSD)
+    - **symbol**: Trading symbol (GBPUSD, EURUSD, USDJPY, AUDUSD)
     - **volume**: Trade volume in lots
     - **order_type**: 'buy' or 'sell'
     - **sl**: Stop Loss price

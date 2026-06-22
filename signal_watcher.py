@@ -24,13 +24,13 @@ from schemas import TradeRequest
 logger = logging.getLogger(__name__)
 
 # Maps SignalTrade pair display names (from API response "pair" field) to MT5 symbols.
-# Key   = SignalTrade "pair" value, e.g. "BTC/USD"
-# Value = MT5 symbol, e.g. "BTCUSD"
+# Key   = SignalTrade "pair" value, e.g. "GBP/USD"
+# Value = MT5 symbol, e.g. "GBPUSD"
 PAIR_DISPLAY_TO_MT5: dict[str, str] = {
-    "BTC/USD": "BTCUSD",
     "GBP/USD": "GBPUSD",
+    "EUR/USD": "EURUSD",
     "USD/JPY": "USDJPY",
-    "XAU/USD": "XAUUSD",
+    "AUD/USD": "AUDUSD",
 }
 
 # JPY pairs trade in 0.01 increments (1 pip = 0.01); non-JPY in 0.0001 (1 pip = 0.0001).
@@ -218,7 +218,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             )
             return None
 
-    volume = settings.xauusd_volume if mt5_symbol in ("XAUUSD", "BTCUSD") else settings.default_volume
+    volume = settings.default_volume
 
     return TradeRequest(
         symbol=mt5_symbol,

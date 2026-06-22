@@ -31,7 +31,7 @@ class TradeInfo:
 
 
 class TradeRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, description="Trading symbol, e.g. BTCUSD")
+    symbol: str = Field(..., min_length=1, description="Trading symbol, e.g. GBPUSD")
     volume: float = Field(..., gt=0, description="Trade volume (lots)")
     order_type: str = Field(..., description="Order type: 'buy' or 'sell'")
     sl: float = Field(..., description="Stop Loss price")

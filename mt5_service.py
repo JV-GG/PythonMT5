@@ -169,18 +169,18 @@ ATR_CACHE_TTL = 20.0
 # Multiplier applied to ATR to derive the minimum distance per symbol.
 # Higher = more conservative spacing; lower = tighter spacing allowed.
 symbol_atr_multiplier: dict[str, float] = {
-    "BTCUSD": 1.5,
-    "XAUUSD": 1.2,
-    "USDJPY": 1.0,
     "GBPUSD": 1.0,
+    "EURUSD": 1.0,
+    "USDJPY": 1.0,
+    "AUDUSD": 1.0,
 }
 
 # Fallback minimum distances (used if ATR fetch fails).
 FALLBACK_MIN_DISTANCE: dict[str, float] = {
-    "BTCUSD": 300,
-    "XAUUSD": 10,
-    "USDJPY": 0.3,
     "GBPUSD": 0.003,
+    "EURUSD": 0.003,
+    "USDJPY": 0.3,
+    "AUDUSD": 0.003,
 }
 
 

@@ -16,9 +16,9 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Trading
-    allowed_symbols: list[str] = ["BTCUSD", "GBPUSD", "USDJPY", "XAUUSD"]
-    default_volume: float = 0.1          # used for BTCUSD, GBPUSD, USDJPY
-    xauusd_volume: float = 0.01          # used for XAUUSD
+    allowed_symbols: list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD"]
+    default_volume: float = 0.01          # default trade volume in lots
+    xauusd_volume: float = 0.01          # legacy, keeping for compatibility
     magic_number: int = 10001
     default_deviation: int = 20
     default_comment: str = "SignalTrade Auto"
