@@ -92,9 +92,9 @@ def _is_confidence_acceptable(
     """
     Apply SignalTrade's session-aware confidence floors.
 
-    Session quality → confirmed floor / potential floor:
-      optimal/good  → 55% / 65%
-      poor (Asian)  → 70% / 80%
+    Session quality → minimum floor:
+      optimal/good  → 65%
+      poor (Asian)  → 70%
 
     Returns (True, reason) if signal should execute, (False, reason) if blocked.
     """
@@ -106,7 +106,7 @@ def _is_confidence_acceptable(
         potential_floor = 80
         session_name = session_info.get("name", "Asian / Off-hours")
     else:
-        confirmed_floor = 55
+        confirmed_floor = 65
         potential_floor = 65
         session_name = session_info.get("name", "Active session")
 
@@ -139,8 +139,8 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
       }
 
     Returns None if the signal is NEUTRAL, invalid, or fails the
-    session-aware confidence gate (optimal/good sessions: confirmed >= 55%,
-    potential >= 65%; poor/Asian sessions: confirmed >= 70%, potential >= 80%).
+    session-aware confidence gate (optimal/good sessions: >= 65%;
+    poor/Asian sessions: >= 70%).
     """
     ai = signal_data.get("aiSignal", {})
     direction: str = ai.get("signal", "NEUTRAL")
