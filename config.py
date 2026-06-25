@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     mt5_login: int = 0
     mt5_password: str = ""
     mt5_server: str = ""
+    mt5_terminal_path: str = ""
 
     # API Security
     api_key: str = ""

@@ -40,7 +40,11 @@ def connect_mt5() -> bool:
 
     logger.info(f"Connecting to MT5 server: {settings.mt5_server}")
 
-    if not mt5.initialize():
+    init_kwargs = {}
+    if settings.mt5_terminal_path:
+        init_kwargs["path"] = settings.mt5_terminal_path
+
+    if not mt5.initialize(**init_kwargs):
         error_code = mt5.last_error()
         raise MT5ConnectionError(
             f"MT5 initialize() failed. Error code: {error_code}"

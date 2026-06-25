@@ -253,10 +253,20 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to connect to MT5 on startup: {e}")
     start_trade_manager()
     start_monitor()
+    
+    # Auto-start the signal watcher
+    logger.info("Auto-starting signal watcher...")
+    start_watcher()
+    
     yield
     global _manager_running
     _manager_running = False
     stop_monitor()
+    
+    # Stop the signal watcher on shutdown
+    logger.info("Stopping signal watcher...")
+    stop_watcher()
+    
     logger.info("Shutting down...")
     disconnect_mt5()
 
