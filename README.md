@@ -68,19 +68,39 @@ A FastAPI-based REST API that integrates MetaTrader 5 (MT5) with an automated si
 
 ## Running the Application
 
-To run the FastAPI server, use one of the following commands:
+Before running, ensure your **MetaTrader 5 terminal** is open, running, and logged into your account.
 
-### Method 1: Using the entrypoint script (Recommended)
-This runs the application using configuration settings defined in `.env` and enables auto-reload for development.
-```bash
-python main.py
-```
+### Using PowerShell
 
-### Method 2: Running directly with Uvicorn
-You can also run it directly via the Uvicorn CLI:
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
+1. Open PowerShell and navigate to the project directory:
+   ```powershell
+   cd C:\Users\Administrator\Documents\GitHub\PythonMT5
+   ```
+2. Activate the virtual environment:
+   ```powershell
+   .\venv\Scripts\Activate.ps1
+   ```
+3. Run the application:
+   ```powershell
+   python main.py
+   ```
+
+### Using Command Prompt (cmd)
+
+1. Open Command Prompt and navigate to the project directory:
+   ```cmd
+   cd C:\Users\Administrator\Documents\GitHub\PythonMT5
+   ```
+2. Activate the virtual environment:
+   ```cmd
+   venv\Scripts\activate.bat
+   ```
+3. Run the application:
+   ```cmd
+   python main.py
+   ```
+
+---
 
 Once running, you can access:
 - **Interactive API Documentation (Swagger UI)**: `http://localhost:8000/docs`
