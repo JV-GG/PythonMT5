@@ -280,84 +280,42 @@ def should_execute_trade(
     active_trades_ref: dict[int, TradeInfo],
 ) -> bool:
     """
-    Decide whether a new trade should be allowed based on ATR-based dynamic
-    spacing from existing open positions of the same symbol and direction.
-
-    Reads from the active_trades registry first (avoids extra MT5 calls when
-    the position is already tracked), then falls back to mt5.positions_get()
-    for any positions not yet registered.
+    Decide whether a new trade should be allowed.
+    Enforces a strict "only one open position per symbol at a time" rule.
+    If there is already a running position for the same symbol (with matching magic number),
+    the new trade is blocked.
 
     Args:
-        symbol:           MT5 symbol, e.g. "BTCUSD"
+        symbol:           MT5 symbol, e.g. "GBPUSD"
         direction:        "buy" or "sell"
         new_entry_price:  proposed entry price from the signal
         active_trades_ref: reference to the shared active_trades dict
 
     Returns:
-        True  → trade is allowed (sufficient distance from all existing positions)
-        False → trade should be skipped (price too close to an existing position)
+        True  → trade is allowed (no existing open position for this symbol)
+        False → trade is blocked (a position for this symbol is already running)
     """
     settings = get_settings()
-    min_dist = get_dynamic_min_distance(symbol)
 
     # 1. Check active_trades registry (preferred — no MT5 round-trip)
     for order_id, trade in active_trades_ref.items():
-        if trade.symbol != symbol or trade.direction != direction:
-            continue
-        existing_price = trade.entry_price
-        if direction == "buy":
-            if new_entry_price <= existing_price - min_dist:
-                logger.info(
-                    f"Trade allowed (active_trades) | symbol={symbol} new_entry={new_entry_price} "
-                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
-                )
-                return True
-        else:
-            if new_entry_price >= existing_price + min_dist:
-                logger.info(
-                    f"Trade allowed (active_trades) | symbol={symbol} new_entry={new_entry_price} "
-                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
-                )
-                return True
+        if trade.symbol == symbol:
+            logger.warning(
+                f"Trade skipped: A position for symbol {symbol} is already active in registry (Order: {order_id})"
+            )
+            return False
 
     # 2. Fall back to MT5 positions (covers trades opened outside this system)
     positions = mt5.positions_get()
-    if positions is None:
-        return True
-
-    has_conflicting = False
-    for position in positions:
-        if position.symbol != symbol or position.magic != settings.magic_number:
-            continue
-        pos_dir = "buy" if position.type == mt5.ORDER_TYPE_BUY else "sell"
-        if pos_dir != direction:
-            continue
-        has_conflicting = True
-        existing_price = position.price_open
-        if direction == "buy":
-            if new_entry_price <= existing_price - min_dist:
-                logger.info(
-                    f"Trade allowed (MT5) | symbol={symbol} new_entry={new_entry_price} "
-                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
+    if positions is not None:
+        for position in positions:
+            if position.symbol == symbol and position.magic == settings.magic_number:
+                logger.warning(
+                    f"Trade skipped: A position for symbol {symbol} is already running in MT5 (Ticket: {position.ticket})"
                 )
-                return True
-        else:
-            if new_entry_price >= existing_price + min_dist:
-                logger.info(
-                    f"Trade allowed (MT5) | symbol={symbol} new_entry={new_entry_price} "
-                    f"existing={existing_price} distance={abs(new_entry_price - existing_price):.5f}"
-                )
-                return True
+                return False
 
-    if has_conflicting:
-        logger.warning(
-            f"Trade skipped: too close to existing position | "
-            f"symbol={symbol} direction={direction} new_entry={new_entry_price} "
-            f"min_distance={min_dist}"
-        )
-        return False
-
-    logger.info(f"Trade allowed: no conflicting positions | symbol={symbol}")
+    logger.info(f"Trade allowed: No active position for symbol={symbol}")
     return True
 
 
