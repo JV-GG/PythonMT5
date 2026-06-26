@@ -90,25 +90,16 @@ def _is_confidence_acceptable(
     signal_data: dict[str, Any],
 ) -> tuple[bool, str]:
     """
-    Apply SignalTrade's session-aware confidence floors.
-
-    Session quality → minimum floor:
-      optimal/good  → 65%
-      poor (Asian)  → 70%
+    Apply SignalTrade's confidence floors.
+    All sessions require a minimum of 65% confidence.
 
     Returns (True, reason) if signal should execute, (False, reason) if blocked.
     """
     session_info = signal_data.get("sessionInfo") or {}
-    quality = session_info.get("quality", "good")
+    session_name = session_info.get("name", "Active session")
 
-    if quality == "poor":
-        confirmed_floor = 70
-        potential_floor = 80
-        session_name = session_info.get("name", "Asian / Off-hours")
-    else:
-        confirmed_floor = 65
-        potential_floor = 65
-        session_name = session_info.get("name", "Active session")
+    confirmed_floor = 65
+    potential_floor = 65
 
     if confidence >= confirmed_floor:
         return True, f"{session_name} — confirmed, confidence {confidence}% >= {confirmed_floor}%"
