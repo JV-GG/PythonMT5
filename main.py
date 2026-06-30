@@ -411,6 +411,11 @@ async def trade(request: TradeRequest):
 
     try:
         result = open_trade(request)
+        if result.order_id is None or result.executed_price is None:
+            raise MT5TradeError(
+                f"Trade request returned success but missing order_id ({result.order_id}) "
+                f"or executed_price ({result.executed_price})"
+            )
         register_trade(
             order_id=result.order_id,
             symbol=request.symbol,

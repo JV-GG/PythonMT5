@@ -119,6 +119,16 @@ def _is_confidence_acceptable(
     )
 
 
+def get_confidence_comment(confidence: float) -> str:
+    """
+    Format confidence value as a percentage string comment (e.g., 20%).
+    If confidence is integer-like (e.g., 20.0), return '20%'.
+    """
+    if confidence % 1 == 0:
+        return f"{int(confidence)}%"
+    return f"{confidence}%"
+
+
 def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     """
     Transform a SignalTrade response into a TradeRequest for MT5.
@@ -280,6 +290,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         tp=tp1_value,
         tp1=tp1_value,
         tp_final=tp_final_value,
+        comment=get_confidence_comment(confidence),
     )
 
 
@@ -405,6 +416,11 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         try:
             result = open_trade(trade_req)
+            if result.order_id is None or result.executed_price is None:
+                raise MT5TradeError(
+                    f"Trade request returned success but missing order_id ({result.order_id}) "
+                    f"or executed_price ({result.executed_price})"
+                )
             logger.info(f"Trade fired successfully — order_id={result.order_id}")
 
             register_trade(

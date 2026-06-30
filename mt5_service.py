@@ -124,14 +124,15 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         "tp": request.tp,
         "deviation": settings.default_deviation,
         "magic": settings.magic_number,
-        "comment": settings.default_comment,
+        "comment": request.comment if request.comment is not None else settings.default_comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": order_type_filling,
     }
 
     logger.info(
         f"Executing trade | symbol={symbol} volume={request.volume} "
-        f"type={request.order_type} price={price} sl={request.sl} tp={request.tp}"
+        f"type={request.order_type} price={price} sl={request.sl} tp={request.tp} "
+        f"comment={trade_request['comment']}"
     )
 
     result = mt5.order_send(trade_request)
@@ -441,7 +442,7 @@ def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | No
     loss_percent = loss / _daily_start_balance
 
     if _daily_loss_limit_hit:
-        remaining = DAILY_RESET_INTERVAL - (time.time() - _last_reset_time)
+        remaining = DAILY_RESET_INTERVAL - (time.time() - _last_reset_time) if _last_reset_time is not None else DAILY_RESET_INTERVAL
         logger.warning(
             f"Daily loss limit already hit | "
             f"(will reset in {remaining:.0f}s)"
