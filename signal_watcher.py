@@ -84,6 +84,16 @@ SIGNALTRADE_PAIR_CODES = list(PAIR_DISPLAY_TO_MT5.values())
 # Track last seen timestamp per pair display to avoid duplicate executions
 _last_signals: dict[str, str] = {}
 
+# Track last executed signal fingerprint per pair to prevent the same signal
+# (same direction + SL + TP levels) from opening multiple orders even if
+# SignalTrade refreshes the timestamp.
+_last_executed_fingerprint: dict[str, str] = {}
+
+
+def _signal_fingerprint(direction: str, sl: float, tp: float, tp_final: float | None) -> str:
+    """Return a compact string that uniquely identifies a signal's trade parameters."""
+    return f"{direction}|{sl}|{tp}|{tp_final}"
+
 
 def _is_confidence_acceptable(
     confidence: float,
@@ -254,6 +264,21 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         trade_req = _transform_signal(data)
         if trade_req is None:
+            _last_signals[pair_display] = timestamp
+            continue
+
+        # Duplicate signal guard: skip if direction + SL/TP levels are identical
+        # to the last executed signal for this pair (prevents the same signal
+        # from opening multiple orders when only the timestamp changes).
+        fp = _signal_fingerprint(
+            trade_req.order_type, trade_req.sl, trade_req.tp, trade_req.tp_final
+        )
+        if fp == _last_executed_fingerprint.get(pair_display):
+            _last_signals[pair_display] = timestamp
+            logger.info(
+                f"Signal skipped (duplicate fingerprint) for {pair_display} | "
+                f"direction={trade_req.order_type} sl={trade_req.sl} tp={trade_req.tp}"
+            )
             continue
 
         session = data.get("sessionInfo") or {}
@@ -309,6 +334,10 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 initial_tp1=trade_req.tp1 or trade_req.tp,
                 tp2=trade_req.tp_final,
             )
+
+            # Record the fingerprint so the same signal won't fire again
+            _last_executed_fingerprint[pair_display] = fp
+
             logger.info(
                 f"Trade registered | order_id={result.order_id} symbol={trade_req.symbol} "
                 f"direction={trade_req.order_type} entry={result.executed_price} "
@@ -379,4 +408,5 @@ def watcher_status() -> dict:
         "running": running,
         "tracked_pairs": list(PAIR_DISPLAY_TO_MT5.keys()),
         "last_signals": _last_signals,
+        "last_executed_fingerprints": _last_executed_fingerprint,
     }
