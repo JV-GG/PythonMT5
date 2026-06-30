@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     default_deviation: int = 20
     default_comment: str = "SignalTrade Auto"
     max_positions_per_symbol: int = 10
+    tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: int = 60  # seconds between each poll

@@ -1,4 +1,5 @@
 {
-    "venvPath": ".",
-    "venv": "venv"
+    "venvPath": "c:/PythonMT5",
+    "venv": "venv",
+    "pythonVersion": "3.13"
 }
