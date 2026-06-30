@@ -16,7 +16,7 @@ A FastAPI-based REST API that integrates MetaTrader 5 (MT5) with an automated si
   - **Margin Check**: Blocks new trades if margin usage exceeds 40%.
   - **Equity Peak Drawdown**: Blocks new trades if equity falls 10% below the intraday peak.
   - **Daily Loss Drawdown**: Blocks new trades if the daily loss exceeds 50%.
-  - **Position Spacing Check**: Prevents duplicate executions by blocking trades if a position for the same symbol and direction is already open within proximity.
+  - **Position Count Check**: Prevents excessive risk exposure by limiting the number of active positions per symbol (default maximum: 10).
 
 ---
 

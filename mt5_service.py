@@ -281,9 +281,9 @@ def should_execute_trade(
 ) -> bool:
     """
     Decide whether a new trade should be allowed.
-    Enforces a strict "only one open position per symbol at a time" rule.
-    If there is already a running position for the same symbol (with matching magic number),
-    the new trade is blocked.
+    Enforces a limit of max_positions_per_symbol active positions per symbol.
+    If the number of running positions for the same symbol (with matching magic number)
+    reaches the maximum allowed limit, the new trade is blocked.
 
     Args:
         symbol:           MT5 symbol, e.g. "GBPUSD"
@@ -292,30 +292,37 @@ def should_execute_trade(
         active_trades_ref: reference to the shared active_trades dict
 
     Returns:
-        True  → trade is allowed (no existing open position for this symbol)
-        False → trade is blocked (a position for this symbol is already running)
+        True  → trade is allowed (fewer than max_positions_per_symbol active positions for this symbol)
+        False → trade is blocked (limit reached)
     """
     settings = get_settings()
+    max_allowed = settings.max_positions_per_symbol
 
-    # 1. Check active_trades registry (preferred — no MT5 round-trip)
+    active_tickets = set()
+
+    # 1. Count positions in active_trades registry (preferred — no MT5 round-trip)
     for order_id, trade in active_trades_ref.items():
         if trade.symbol == symbol:
-            logger.warning(
-                f"Trade skipped: A position for symbol {symbol} is already active in registry (Order: {order_id})"
-            )
-            return False
+            active_tickets.add(order_id)
 
-    # 2. Fall back to MT5 positions (covers trades opened outside this system)
+    # 2. Count positions in MT5 (covers trades opened outside this system)
     positions = mt5.positions_get()
     if positions is not None:
         for position in positions:
             if position.symbol == symbol and position.magic == settings.magic_number:
-                logger.warning(
-                    f"Trade skipped: A position for symbol {symbol} is already running in MT5 (Ticket: {position.ticket})"
-                )
-                return False
+                active_tickets.add(position.ticket)
 
-    logger.info(f"Trade allowed: No active position for symbol={symbol}")
+    current_count = len(active_tickets)
+    if current_count >= max_allowed:
+        logger.warning(
+            f"Trade skipped: Symbol {symbol} has {current_count} active positions, "
+            f"reaching/exceeding the limit of {max_allowed}."
+        )
+        return False
+
+    logger.info(
+        f"Trade allowed: Symbol={symbol} has {current_count}/{max_allowed} active positions."
+    )
     return True
 
 

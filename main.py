@@ -406,7 +406,7 @@ async def trade(request: TradeRequest):
             success=False,
             order_id=None,
             executed_price=None,
-            message="Trade skipped: price too close to existing position",
+            message="Trade skipped: maximum active positions limit reached for this symbol",
         )
 
     try:
