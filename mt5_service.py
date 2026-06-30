@@ -597,3 +597,65 @@ def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | N
             f"Position {position_ticket} modified successfully | sl={new_sl} tp={new_tp}"
         )
     return result
+
+
+def close_position(position_ticket: int, symbol: str, volume: float, direction: str) -> bool:
+    """
+    Close an open MT5 position by sending an opposite market order.
+
+    Args:
+        position_ticket: MT5 position ticket number
+        symbol:          Trading symbol, e.g. "GBPUSD"
+        volume:          Position volume to close
+        direction:       Original direction of the position ("buy" or "sell")
+
+    Returns:
+        True if the position was closed successfully, False otherwise.
+    """
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        logger.error(f"Cannot close position {position_ticket}: no tick data for {symbol}")
+        return False
+
+    # Close a BUY by selling at bid, close a SELL by buying at ask
+    if direction == "buy":
+        close_type = mt5.ORDER_TYPE_SELL
+        price = tick.bid
+    else:
+        close_type = mt5.ORDER_TYPE_BUY
+        price = tick.ask
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": volume,
+        "type": close_type,
+        "position": position_ticket,
+        "price": price,
+        "deviation": get_settings().default_deviation,
+        "magic": get_settings().magic_number,
+        "comment": "Direction flip close",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    logger.info(
+        f"Closing position {position_ticket} | symbol={symbol} volume={volume} "
+        f"direction={direction} price={price}"
+    )
+
+    result = mt5.order_send(request)
+    if result is None:
+        logger.error(f"Close returned None. Error: {mt5.last_error()}")
+        return False
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        logger.warning(
+            f"Close failed retcode={result.retcode} comment={result.comment}"
+        )
+        return False
+
+    # Unregister from active_trades
+    unregister_trade(position_ticket)
+    logger.info(f"Position {position_ticket} closed successfully.")
+    return True

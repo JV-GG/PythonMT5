@@ -1,5 +1,9 @@
 {
     "venvPath": "c:/PythonMT5",
     "venv": "venv",
-    "pythonVersion": "3.13"
+    "pythonVersion": "3.14",
+    "pythonPlatform": "Windows",
+    "extraPaths": [
+        "c:/PythonMT5/venv/Lib/site-packages"
+    ]
 }

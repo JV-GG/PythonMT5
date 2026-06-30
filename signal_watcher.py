@@ -7,10 +7,12 @@ import logging
 from typing import Any
 
 import httpx
+import MetaTrader5 as mt5
 
 from config import get_settings
 from mt5_service import (
     open_trade,
+    close_position,
     should_execute_trade,
     is_margin_safe,
     is_drawdown_safe,
@@ -84,15 +86,11 @@ SIGNALTRADE_PAIR_CODES = list(PAIR_DISPLAY_TO_MT5.values())
 # Track last seen timestamp per pair display to avoid duplicate executions
 _last_signals: dict[str, str] = {}
 
-# Track last executed signal fingerprint per pair to prevent the same signal
-# (same direction + SL + TP levels) from opening multiple orders even if
-# SignalTrade refreshes the timestamp.
-_last_executed_fingerprint: dict[str, str] = {}
-
-
-def _signal_fingerprint(direction: str, sl: float, tp: float, tp_final: float | None) -> str:
-    """Return a compact string that uniquely identifies a signal's trade parameters."""
-    return f"{direction}|{sl}|{tp}|{tp_final}"
+# Track the last executed signal's raw fingerprint per pair.
+# Uses the RAW SL/TP from SignalTrade (before any reduction) so that the same
+# signal is never executed twice, even if the entry price drifts between polls.
+# A genuinely new signal (different SL/TP) will have a different fingerprint.
+_last_executed_signal: dict[str, str] = {}
 
 
 def _is_confidence_acceptable(
@@ -316,23 +314,26 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if timestamp == _last_signals.get(pair_display):
             continue
 
+        # Build a fingerprint from the RAW signal values (before 10% reduction)
+        # so that the same signal is never executed twice regardless of entry drift.
+        ai_raw = data.get("aiSignal", {})
+        raw_direction = ai_raw.get("signal", "")
+        raw_sl = ai_raw.get("stopLoss", "")
+        raw_tp1 = ai_raw.get("takeProfit1", "")
+        raw_tp_final = ai_raw.get("takeProfit", "")
+        raw_fingerprint = f"{raw_direction}|{raw_sl}|{raw_tp1}|{raw_tp_final}"
+
+        if raw_fingerprint == _last_executed_signal.get(pair_display):
+            _last_signals[pair_display] = timestamp
+            logger.debug(
+                f"Signal skipped (same signal already executed) for {pair_display} | "
+                f"fingerprint={raw_fingerprint}"
+            )
+            continue
+
         trade_req = _transform_signal(data)
         if trade_req is None:
             _last_signals[pair_display] = timestamp
-            continue
-
-        # Duplicate signal guard: skip if direction + SL/TP levels are identical
-        # to the last executed signal for this pair (prevents the same signal
-        # from opening multiple orders when only the timestamp changes).
-        fp = _signal_fingerprint(
-            trade_req.order_type, trade_req.sl, trade_req.tp, trade_req.tp_final
-        )
-        if fp == _last_executed_fingerprint.get(pair_display):
-            _last_signals[pair_display] = timestamp
-            logger.info(
-                f"Signal skipped (duplicate fingerprint) for {pair_display} | "
-                f"direction={trade_req.order_type} sl={trade_req.sl} tp={trade_req.tp}"
-            )
             continue
 
         session = data.get("sessionInfo") or {}
@@ -345,6 +346,33 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         ai = data.get("aiSignal", {})
         signal_entry = ai.get("entry")
+
+        # ── Direction-flip: close profitable opposite positions ──────────
+        # When signal flips (e.g. existing BUY → new SELL), close opposite
+        # positions that are in profit.  Losing positions are left to float
+        # and will be managed by their SL/TP.
+        settings = get_settings()
+        opposite = "sell" if trade_req.order_type == "buy" else "buy"
+        positions = mt5.positions_get(symbol=trade_req.symbol)
+        if positions:
+            for pos in positions:
+                if pos.magic != settings.magic_number:
+                    continue
+                pos_dir = "buy" if pos.type == mt5.ORDER_TYPE_BUY else "sell"
+                if pos_dir != opposite:
+                    continue
+                # pos.profit includes swap + commission
+                if pos.profit > 0:
+                    logger.info(
+                        f"Direction flip: closing profitable {pos_dir.upper()} "
+                        f"position {pos.ticket} | profit={pos.profit:.2f}"
+                    )
+                    close_position(pos.ticket, pos.symbol, pos.volume, pos_dir)
+                else:
+                    logger.info(
+                        f"Direction flip: letting losing {pos_dir.upper()} "
+                        f"position {pos.ticket} float | profit={pos.profit:.2f}"
+                    )
 
         # Risk gates
         if not is_margin_safe()[0]:
@@ -389,8 +417,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 tp2=trade_req.tp_final,
             )
 
-            # Record the fingerprint so the same signal won't fire again
-            _last_executed_fingerprint[pair_display] = fp
+            # Record the raw signal fingerprint so the same signal won't fire again
+            _last_executed_signal[pair_display] = raw_fingerprint
 
             logger.info(
                 f"Trade registered | order_id={result.order_id} symbol={trade_req.symbol} "
@@ -462,5 +490,5 @@ def watcher_status() -> dict:
         "running": running,
         "tracked_pairs": list(PAIR_DISPLAY_TO_MT5.keys()),
         "last_signals": _last_signals,
-        "last_executed_fingerprints": _last_executed_fingerprint,
+        "last_executed_signals": _last_executed_signal,
     }
