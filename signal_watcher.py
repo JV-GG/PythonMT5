@@ -91,15 +91,15 @@ def _is_confidence_acceptable(
 ) -> tuple[bool, str]:
     """
     Apply SignalTrade's confidence floors.
-    All sessions require a minimum of 40% confidence.
+    All sessions require a minimum of 20% confidence.
 
     Returns (True, reason) if signal should execute, (False, reason) if blocked.
     """
     session_info = signal_data.get("sessionInfo") or {}
     session_name = session_info.get("name", "Active session")
 
-    confirmed_floor = 40
-    potential_floor = 40
+    confirmed_floor = 20
+    potential_floor = 20
 
     if confidence >= confirmed_floor:
         return True, f"{session_name} — confirmed, confidence {confidence}% >= {confirmed_floor}%"
@@ -130,7 +130,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
       }
 
     Returns None if the signal is NEUTRAL, invalid, or fails the
-    session-aware confidence gate (all sessions: >= 40%).
+    session-aware confidence gate (all sessions: >= 20%).
     """
     ai = signal_data.get("aiSignal", {})
     direction: str = ai.get("signal", "NEUTRAL")
