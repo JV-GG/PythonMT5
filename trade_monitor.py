@@ -61,15 +61,57 @@ def _get_tick(symbol: str) -> dict | None:
     return {"bid": tick.bid, "ask": tick.ask}
 
 
-# ── Phase 2 triggering ────────────────────────────────────────────────────────
+# ── Stop level validations ────────────────────────────────────────────────────
 
-def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity: float) -> bool:
-    """Return True if the current market price is within `proximity` of TP1."""
+def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
+    """Ensure SL is on the correct side of current price and respects stops level."""
     tick = _get_tick(symbol)
     if tick is None:
         return False
+    sym_info = mt5.symbol_info(symbol)
+    if sym_info is None:
+        return False
+    stops_level = sym_info.trade_stops_level
+    point = sym_info.point
+    min_distance = max(stops_level, 5) * point
+    
+    if direction == "buy":
+        return sl < tick["bid"] - min_distance
+    else:
+        return sl > tick["ask"] + min_distance
+
+
+def _is_valid_tp(symbol: str, direction: str, tp: float) -> bool:
+    """Ensure TP is on the correct side of current price and respects stops level."""
+    tick = _get_tick(symbol)
+    if tick is None:
+        return False
+    sym_info = mt5.symbol_info(symbol)
+    if sym_info is None:
+        return False
+    stops_level = sym_info.trade_stops_level
+    point = sym_info.point
+    min_distance = max(stops_level, 5) * point
+    
+    if direction == "buy":
+        return tp > tick["ask"] + min_distance
+    else:
+        return tp < tick["bid"] - min_distance
+
+
+# ── Phase 2 triggering ────────────────────────────────────────────────────────
+
+def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity_pips: float) -> bool:
+    """Return True if the current market price is within `proximity_pips` pips of TP1."""
+    tick = _get_tick(symbol)
+    if tick is None:
+        return False
+    
+    pip_size = 0.01 if "JPY" in symbol else 0.0001
+    proximity_price = proximity_pips * pip_size
+    
     price = tick["ask"] if direction == "buy" else tick["bid"]
-    return abs(price - tp1) <= proximity
+    return abs(price - tp1) <= proximity_price
 
 
 # ── Position processing ──────────────────────────────────────────────────────
@@ -102,15 +144,31 @@ def _process_one_position(pos: dict) -> None:
                 f"[{ticket}] Phase 2 triggered | {direction.upper()} {symbol} "
                 f"price={current_price:.5f} near TP1={trade.initial_tp1:.5f}"
             )
-            # Initial Phase 2 SL = TP1 (locks minimum profit)
-            new_sl = trade.initial_tp1
+            # Try to extend TP to TP2 to avoid closing at TP1
             new_tp = trade.tp2
+            
+            # Initial Phase 2 SL tries to lock in TP1 profit.
+            # If TP1 is not a valid SL yet (price has not cleared it by stops level),
+            # we set SL to entry_price (breakeven) if valid, or fallback to initial SL.
+            if _is_valid_sl(symbol, direction, trade.initial_tp1):
+                new_sl = trade.initial_tp1
+            elif _is_valid_sl(symbol, direction, trade.entry_price):
+                new_sl = trade.entry_price
+            else:
+                new_sl = trade.initial_sl
+
+            # Verify that both are valid before modifying
+            if not _is_valid_tp(symbol, direction, new_tp):
+                logger.warning(f"[{ticket}] Cannot trigger Phase 2: extended TP {new_tp:.5f} is invalid.")
+                return
 
             if _modify_position(ticket, new_sl, new_tp):
                 trade.phase = PHASE_2_TRAILING
                 trade.current_sl = new_sl
                 trade.current_tp = new_tp
-                trade.triggered_at = current_price
+                # Record the price when Phase 2 was triggered
+                tick = _get_tick(symbol)
+                trade.triggered_at = (tick["bid"] if is_buy else tick["ask"]) if tick else current_price
             return
 
     # ── Phase 2: trailing TP and SL ─────────────────────────────────────────
@@ -118,21 +176,42 @@ def _process_one_position(pos: dict) -> None:
         tick = _get_tick(symbol)
         if tick is None:
             return
-        market_price = tick["ask"] if is_buy else tick["bid"]
+        
+        current_bid_ask = tick["bid"] if is_buy else tick["ask"]
 
         new_tp = trade.current_tp
         new_sl = trade.current_sl
 
         if is_buy:
-            if market_price > trade.current_tp:
-                new_tp = market_price
-            if market_price > trade.current_sl:
-                new_sl = market_price
+            # Upgrade SL to initial_tp1 if it hasn't been set yet and is now valid
+            if new_sl < trade.initial_tp1 and _is_valid_sl(symbol, direction, trade.initial_tp1):
+                new_sl = trade.initial_tp1
+
+            # Trail SL and TP upward if price moves in our direction
+            if current_bid_ask > trade.triggered_at:
+                delta = current_bid_ask - trade.triggered_at
+                potential_sl = new_sl + delta
+                potential_tp = new_tp + delta
+                
+                # Check if potential values are valid
+                if _is_valid_sl(symbol, direction, potential_sl) and _is_valid_tp(symbol, direction, potential_tp):
+                    new_sl = potential_sl
+                    new_tp = potential_tp
         else:  # sell
-            if market_price < trade.current_tp:
-                new_tp = market_price
-            if market_price < trade.current_sl:
-                new_sl = market_price
+            # Upgrade SL to initial_tp1 if it hasn't been set yet and is now valid
+            if new_sl > trade.initial_tp1 and _is_valid_sl(symbol, direction, trade.initial_tp1):
+                new_sl = trade.initial_tp1
+
+            # Trail SL and TP downward if price moves in our direction
+            if current_bid_ask < trade.triggered_at:
+                delta = trade.triggered_at - current_bid_ask
+                potential_sl = new_sl - delta
+                potential_tp = new_tp - delta
+                
+                # Check if potential values are valid
+                if _is_valid_sl(symbol, direction, potential_sl) and _is_valid_tp(symbol, direction, potential_tp):
+                    new_sl = potential_sl
+                    new_tp = potential_tp
 
         if new_tp != trade.current_tp or new_sl != trade.current_sl:
             if _modify_position(ticket, new_sl, new_tp):
@@ -142,6 +221,8 @@ def _process_one_position(pos: dict) -> None:
                 )
                 trade.current_tp = new_tp
                 trade.current_sl = new_sl
+                # Update the baseline if we trailed
+                trade.triggered_at = current_bid_ask
 
 
 def _modify_position(ticket: int, new_sl: float, new_tp: float) -> bool:

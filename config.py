@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Trade monitor (adaptive SL/TP)
     monitor_poll_interval: int = 2   # seconds between each monitor cycle
-    monitor_tp1_proximity: float = 0.5  # how close price must be to TP1 to trigger Phase 2
+    monitor_tp1_proximity: float = 5.0  # how close price must be to TP1 to trigger Phase 2 (in pips, e.g. 5.0)
 
     # Server
     host: str = "0.0.0.0"
