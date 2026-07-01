@@ -4,6 +4,7 @@ Runs as a background asyncio task managed via FastAPI endpoints.
 """
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -91,6 +92,9 @@ _last_signals: dict[str, str] = {}
 # signal is never executed twice, even if the entry price drifts between polls.
 # A genuinely new signal (different SL/TP) will have a different fingerprint.
 _last_executed_signal: dict[str, str] = {}
+
+# Track the last execution time per pair display to enforce the cooldown period.
+_last_executed_time: dict[str, float] = {}
 
 
 def _is_confidence_acceptable(
@@ -325,25 +329,31 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if timestamp == _last_signals.get(pair_display):
             continue
 
-        # Build a fingerprint from the RAW signal values (before 10% reduction)
-        # so that the same signal is never executed twice regardless of entry drift.
+        # Build a fingerprint from the direction and confidence.
+        # This prevents duplicate trades when entry price and SL/TP levels suggested by the API drift slightly.
         ai_raw = data.get("aiSignal", {})
         raw_direction = ai_raw.get("signal", "")
-        raw_sl = ai_raw.get("stopLoss", "")
-        raw_tp1 = ai_raw.get("takeProfit1", "")
-        raw_tp_final = ai_raw.get("takeProfit", "")
-        raw_fingerprint = f"{raw_direction}|{raw_sl}|{raw_tp1}|{raw_tp_final}"
+        raw_fingerprint = f"{raw_direction}|{int(confidence)}"
 
-        if raw_fingerprint == _last_executed_signal.get(pair_display):
+        # Check if the same signal fingerprint was executed recently (cooldown period of 15 minutes)
+        last_exec_time = _last_executed_time.get(pair_display, 0.0)
+        time_elapsed = time.time() - last_exec_time
+        COOLDOWN_PERIOD = 900.0  # 15 minutes in seconds
+
+        if raw_fingerprint == _last_executed_signal.get(pair_display) and time_elapsed < COOLDOWN_PERIOD:
             _last_signals[pair_display] = timestamp
             logger.debug(
-                f"Signal skipped (same signal already executed) for {pair_display} | "
+                f"Signal skipped (same signal already executed within {COOLDOWN_PERIOD/60:.0f} mins) for {pair_display} | "
                 f"fingerprint={raw_fingerprint}"
             )
             continue
 
         trade_req = _transform_signal(data)
         if trade_req is None:
+            # If the signal went neutral or below the floor, clear the last executed fingerprint
+            # so that when a new signal comes in later, it can trigger a trade.
+            if raw_direction not in ("BUY", "SELL") or confidence < 20:
+                _last_executed_signal[pair_display] = ""
             _last_signals[pair_display] = timestamp
             continue
 
@@ -433,8 +443,10 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 tp2=trade_req.tp_final,
             )
 
-            # Record the raw signal fingerprint so the same signal won't fire again
+            # Record the raw signal fingerprint and execution timestamp so the same signal won't fire again
+            # unless the 15-minute cooldown period has passed.
             _last_executed_signal[pair_display] = raw_fingerprint
+            _last_executed_time[pair_display] = time.time()
 
             logger.info(
                 f"Trade registered | order_id={result.order_id} symbol={trade_req.symbol} "
