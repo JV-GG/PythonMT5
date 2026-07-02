@@ -208,7 +208,36 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             )
             return None
 
-    volume = settings.default_volume
+    # Spread mitigation: adjust SL and TP levels to be 15% closer to the entry price
+    if resolved_direction == "buy":
+        adjusted_sl = round(entry - (entry - sl) * 0.85, 5)
+        adjusted_tp1 = round(entry + (tp1_value - entry) * 0.85, 5)
+        adjusted_tp_final = (
+            round(entry + (tp_final_value - entry) * 0.85, 5)
+            if tp_final_value is not None
+            else None
+        )
+    else:  # sell
+        adjusted_sl = round(entry + (sl - entry) * 0.85, 5)
+        adjusted_tp1 = round(entry - (entry - tp1_value) * 0.85, 5)
+        adjusted_tp_final = (
+            round(entry - (entry - tp_final_value) * 0.85, 5)
+            if tp_final_value is not None
+            else None
+        )
+
+    logger.info(
+        f"Adjusting levels for spread (15% closer to entry) | "
+        f"symbol={mt5_symbol} entry={entry} | "
+        f"SL: {sl} -> {adjusted_sl} | "
+        f"TP1: {tp1_value} -> {adjusted_tp1} | "
+        f"TP Final: {tp_final_value} -> {adjusted_tp_final}"
+    )
+    sl = adjusted_sl
+    tp1_value = adjusted_tp1
+    tp_final_value = adjusted_tp_final
+
+    volume = 0.05 if mt5_symbol == "EURUSD" else settings.default_volume
 
     comment_str = None
     if confidence is not None:
