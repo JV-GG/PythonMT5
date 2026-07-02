@@ -124,7 +124,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         "tp": request.tp,
         "deviation": settings.default_deviation,
         "magic": settings.magic_number,
-        "comment": settings.default_comment,
+        "comment": request.comment if request.comment is not None else settings.default_comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": order_type_filling,
     }

@@ -210,6 +210,17 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
     volume = settings.default_volume
 
+    comment_str = None
+    if confidence is not None:
+        try:
+            val = float(confidence)
+            if val.is_integer():
+                comment_str = f"{int(val)}%"
+            else:
+                comment_str = f"{val}%"
+        except (ValueError, TypeError):
+            comment_str = f"{confidence}%"
+
     return TradeRequest(
         symbol=mt5_symbol,
         volume=volume,
@@ -218,6 +229,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         tp=tp1_value,
         tp1=tp1_value,
         tp_final=tp_final_value,
+        comment=comment_str,
     )
 
 

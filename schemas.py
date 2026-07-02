@@ -38,6 +38,7 @@ class TradeRequest(BaseModel):
     tp: float = Field(..., description="Take Profit price (TP1 / initial TP)")
     tp1: float | None = Field(default=None, description="First take profit target (TP1)")
     tp_final: float | None = Field(default=None, description="Final take profit target (TP2 / TP Final)")
+    comment: str | None = Field(default=None, description="Optional comment for the trade, e.g. confidence rating")
 
     @field_validator("order_type")
     @classmethod
