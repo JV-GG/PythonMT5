@@ -3,7 +3,9 @@
     "venv": "venv",
     "pythonVersion": "3.14",
     "pythonPlatform": "Windows",
+    "stubPath": "typings",
     "extraPaths": [
-        "c:/PythonMT5/venv/Lib/site-packages"
+        "c:/PythonMT5/venv/Lib/site-packages",
+        "c:/PythonMT5/typings"
     ]
 }

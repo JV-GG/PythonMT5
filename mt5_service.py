@@ -178,6 +178,7 @@ symbol_atr_multiplier: dict[str, float] = {
     "EURUSD": 1.0,
     "USDJPY": 1.0,
     "AUDUSD": 1.0,
+    "BTCUSD": 1.0,
 }
 
 # Fallback minimum distances (used if ATR fetch fails).
@@ -186,6 +187,7 @@ FALLBACK_MIN_DISTANCE: dict[str, float] = {
     "EURUSD": 0.003,
     "USDJPY": 0.3,
     "AUDUSD": 0.003,
+    "BTCUSD": 100.0,
 }
 
 
@@ -283,8 +285,7 @@ def should_execute_trade(
     """
     Decide whether a new trade should be allowed.
     Enforces a limit of max_positions_per_symbol active positions per symbol.
-    If the number of running positions for the same symbol (with matching magic number)
-    reaches the maximum allowed limit, the new trade is blocked.
+    Also restricts buys and sells per symbol to max_buy_positions_per_symbol and max_sell_positions_per_symbol respectively.
 
     Args:
         symbol:           MT5 symbol, e.g. "GBPUSD"
@@ -293,36 +294,54 @@ def should_execute_trade(
         active_trades_ref: reference to the shared active_trades dict
 
     Returns:
-        True  → trade is allowed (fewer than max_positions_per_symbol active positions for this symbol)
+        True  → trade is allowed (fewer than limits for this symbol and direction)
         False → trade is blocked (limit reached)
     """
     settings = get_settings()
-    max_allowed = settings.max_positions_per_symbol
+    max_total = settings.max_positions_per_symbol
+    max_buy = settings.max_buy_positions_per_symbol
+    max_sell = settings.max_sell_positions_per_symbol
 
-    active_tickets = set()
+    # Map ticket ID to direction ("buy" or "sell")
+    active_positions: dict[int, str] = {}
 
     # 1. Count positions in active_trades registry (preferred — no MT5 round-trip)
     for order_id, trade in active_trades_ref.items():
         if trade.symbol == symbol:
-            active_tickets.add(order_id)
+            active_positions[order_id] = trade.direction.lower()
 
     # 2. Count positions in MT5 (covers trades opened outside this system)
     positions = mt5.positions_get()
     if positions is not None:
         for position in positions:
             if position.symbol == symbol and position.magic == settings.magic_number:
-                active_tickets.add(position.ticket)
+                dir_str = "buy" if position.type == mt5.POSITION_TYPE_BUY else "sell"
+                active_positions[position.ticket] = dir_str
 
-    current_count = len(active_tickets)
-    if current_count >= max_allowed:
+    current_total = len(active_positions)
+    # Check total positions limit per symbol
+    if current_total >= max_total:
         logger.warning(
-            f"Trade skipped: Symbol {symbol} has {current_count} active positions, "
-            f"reaching/exceeding the limit of {max_allowed}."
+            f"Trade skipped: Symbol {symbol} has {current_total} active positions, "
+            f"reaching/exceeding the total limit of {max_total}."
+        )
+        return False
+
+    # Check direction-specific limits (max 5 buy, max 5 sell)
+    target_dir = direction.lower()
+    current_dir_count = sum(1 for d in active_positions.values() if d == target_dir)
+    max_dir_allowed = max_buy if target_dir == "buy" else max_sell
+
+    if current_dir_count >= max_dir_allowed:
+        logger.warning(
+            f"Trade skipped: Symbol {symbol} has {current_dir_count} active {target_dir.upper()} positions, "
+            f"reaching/exceeding the direction limit of {max_dir_allowed}."
         )
         return False
 
     logger.info(
-        f"Trade allowed: Symbol={symbol} has {current_count}/{max_allowed} active positions."
+        f"Trade allowed: Symbol={symbol} direction={target_dir.upper()} has {current_dir_count}/{max_dir_allowed} active "
+        f"and {current_total}/{max_total} total active positions."
     )
     return True
 

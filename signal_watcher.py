@@ -34,6 +34,7 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
     "EUR/USD": "EURUSD",
     "USD/JPY": "USDJPY",
     "AUD/USD": "AUDUSD",
+    "BTC/USD": "BTCUSD",
 }
 
 # JPY pairs trade in 0.01 increments (1 pip = 0.01); non-JPY in 0.0001 (1 pip = 0.0001).
@@ -62,7 +63,10 @@ def _correct_levels_from_pips(
     Heuristic: if the raw levels are insane (SL on wrong side of entry), treat the SL
     value as a pip distance, convert to a price level, then derive TP at 1.5× risk.
     """
-    pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
+    if symbol == "BTCUSD":
+        pip = 1.0
+    else:
+        pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
     sl_dist_pips = round(abs(sl) / pip)
     tp_dist_pips = round(abs(tp) / pip)
 
@@ -374,7 +378,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         # and will be managed by their SL/TP.
         settings = get_settings()
         opposite = "sell" if trade_req.order_type == "buy" else "buy"
-        positions = mt5.positions_get(symbol=trade_req.symbol)
+        positions = mt5.positions_get(symbol=trade_req.symbol)  # Query active positions for symbol
         if positions:
             for pos in positions:
                 if pos.magic != settings.magic_number:
