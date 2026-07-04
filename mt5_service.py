@@ -516,7 +516,7 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
         )
 
     # Guard against division by zero (equity should never be 0 in practice)
-    if _peak_equity <= 0:
+    if _peak_equity is None or _peak_equity <= 0:
         logger.warning("Peak equity is zero or negative — allowing trades with caution")
         return True, info
 
@@ -583,7 +583,7 @@ def unregister_trade(order_id: int) -> bool:
     return active_trades.pop(order_id, None) is not None
 
 
-def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> dict:
+def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> Any:
     """
     Modify SL/TP of an open position.
 
