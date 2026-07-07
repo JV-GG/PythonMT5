@@ -150,6 +150,19 @@ async def active_trades_endpoint():
     }
 
 
+def _get_current_price(symbol: str, order_type: str) -> float | None:
+    """
+    Get current price (ask for buy, bid for sell) for a symbol from MT5.
+    Returns None if terminal is not initialized or tick cannot be fetched.
+    """
+    if not mt5.terminal_info():
+        return None
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return None
+    return tick.ask if order_type.lower() == "buy" else tick.bid
+
+
 @app.post(
     "/trade",
     tags=["Trading"],
