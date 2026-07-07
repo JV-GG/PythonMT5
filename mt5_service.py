@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from config import get_settings
-from schemas import TradeInfo, PHASE_1, TradeRequest, TradeResponse
+from schemas import TradeInfo, PHASE_INITIAL, TradeRequest, TradeResponse
 
 
 logger = logging.getLogger(__name__)
@@ -540,12 +540,72 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
 
 # ── Trade registry ──────────────────────────────────────────────────────────────
 # Single source of truth for all open trade metadata used by the adaptive SL/TP
-# managers (threaded manager in main.py and async monitor in trade_monitor.py).
+# managers (async monitor in trade_monitor.py).
 # Key: order_id (int), Value: TradeInfo
 
-from schemas import TradeInfo, PHASE_1
+import json
+import os
+from schemas import TradeInfo, PHASE_INITIAL
 
 active_trades: dict[int, TradeInfo] = {}
+ACTIVE_TRADES_FILE = "active_trades.json"
+
+
+def save_active_trades() -> None:
+    """Save active trades to active_trades.json for persistence across restarts."""
+    try:
+        data = {
+            str(oid): {
+                "order_id": t.order_id,
+                "symbol": t.symbol,
+                "direction": t.direction,
+                "entry_price": t.entry_price,
+                "initial_sl": t.initial_sl,
+                "initial_tp1": t.initial_tp1,
+                "tp2": t.tp2,
+                "phase": t.phase,
+                "current_sl": t.current_sl,
+                "current_tp": t.current_tp,
+                "triggered_at": t.triggered_at,
+            }
+            for oid, t in active_trades.items()
+        }
+        # Save atomically
+        temp_file = f"{ACTIVE_TRADES_FILE}.tmp"
+        with open(temp_file, "w") as f:
+            json.dump(data, f, indent=4)
+        if os.path.exists(ACTIVE_TRADES_FILE):
+            os.remove(ACTIVE_TRADES_FILE)
+        os.rename(temp_file, ACTIVE_TRADES_FILE)
+    except Exception as e:
+        logger.error(f"Failed to save active trades: {e}")
+
+
+def load_active_trades() -> None:
+    """Load active trades from active_trades.json if it exists."""
+    if not os.path.exists(ACTIVE_TRADES_FILE):
+        return
+    try:
+        with open(ACTIVE_TRADES_FILE, "r") as f:
+            data = json.load(f)
+        for oid_str, val in data.items():
+            oid = int(oid_str)
+            active_trades[oid] = TradeInfo(
+                order_id=val["order_id"],
+                symbol=val["symbol"],
+                direction=val["direction"],
+                entry_price=val["entry_price"],
+                initial_sl=val["initial_sl"],
+                initial_tp1=val["initial_tp1"],
+                tp2=val["tp2"],
+                phase=val.get("phase", PHASE_INITIAL),
+                current_sl=val.get("current_sl", val["initial_sl"]),
+                current_tp=val.get("current_tp", val["initial_tp1"]),
+                triggered_at=val.get("triggered_at", 0.0),
+            )
+        logger.info(f"Loaded {len(active_trades)} active trades from persistence.")
+    except Exception as e:
+        logger.error(f"Failed to load active trades: {e}")
 
 
 def register_trade(
@@ -569,10 +629,11 @@ def register_trade(
         initial_sl=initial_sl,
         initial_tp1=initial_tp1,
         tp2=tp2,
-        phase=PHASE_1,
+        phase=PHASE_INITIAL,
         current_sl=initial_sl,
         current_tp=initial_tp1,
     )
+    save_active_trades()
 
 
 def unregister_trade(order_id: int) -> bool:
@@ -580,7 +641,10 @@ def unregister_trade(order_id: int) -> bool:
     Remove a trade from the registry (e.g. when it is closed).
     Returns True if the trade was removed, False if it wasn't tracked.
     """
-    return active_trades.pop(order_id, None) is not None
+    res = active_trades.pop(order_id, None) is not None
+    if res:
+        save_active_trades()
+    return res
 
 
 def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | None = None) -> Any:

@@ -11,8 +11,9 @@ from config import get_settings
 # managers. Lives here so both the threaded manager (main.py) and the async
 # monitor (trade_monitor.py) share the same type without circular imports.
 
-PHASE_1 = "phase1"
-PHASE_2_TRAILING = "phase2_trailing"
+PHASE_INITIAL = "initial"
+PHASE_PARTIAL_LOCK = "partial_lock"
+PHASE_TP1_HIT = "tp1_hit"
 
 
 @dataclass
@@ -24,7 +25,7 @@ class TradeInfo:
     initial_sl: float
     initial_tp1: float
     tp2: float | None = None
-    phase: str = PHASE_1
+    phase: str = PHASE_INITIAL
     current_sl: float = 0.0
     current_tp: float = 0.0
     triggered_at: float = 0.0

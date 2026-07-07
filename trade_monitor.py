@@ -20,8 +20,8 @@ import logging
 import MetaTrader5 as mt5
 
 from config import get_settings
-from schemas import PHASE_1, PHASE_2_TRAILING, TradeInfo
-from mt5_service import active_trades, modify_position_sl_tp, unregister_trade
+from schemas import PHASE_INITIAL, PHASE_PARTIAL_LOCK, PHASE_TP1_HIT, TradeInfo
+from mt5_service import active_trades, modify_position_sl_tp, unregister_trade, save_active_trades
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,21 @@ def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity_pips: 
 
 # ── Position processing ──────────────────────────────────────────────────────
 
+_JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "AUDJPY", "CADJPY", "CHFJPY"}
+
+
+def _get_pip_size(symbol: str) -> float:
+    """Return pip size for the symbol."""
+    if symbol == "BTCUSD":
+        return 1.0
+    elif symbol == "XAUUSD":
+        return 0.1
+    elif symbol in _JPY_PAIRS:
+        return 0.01
+    else:
+        return 0.0001
+
+
 def _process_one_position(pos: dict) -> None:
     """
     Evaluate a single registered trade and apply Phase 2 adaptive TP/SL if needed.
@@ -124,105 +139,97 @@ def _process_one_position(pos: dict) -> None:
     ticket = pos["ticket"]
     symbol = pos["symbol"]
     direction = pos["type"]         # "buy" or "sell"
-    current_price = pos["price_current"]
+    current_sl = pos["sl"]
+    current_tp = pos["tp"]
     is_buy = direction == "buy"
 
     trade = active_trades.get(ticket)
     if trade is None:
         return
 
-    # ── Phase 1: check if Phase 2 should trigger ──────────────────────────────
-    if trade.phase == PHASE_1:
-        if trade.tp2 is None:
-            # No TP2 configured — Phase 2 trailing doesn't apply
-            return
+    tick = _get_tick(symbol)
+    if tick is None:
+        return
+    price = tick["bid"] if is_buy else tick["ask"]
 
-        settings = get_settings()
-        if _is_price_near_tp1(symbol, direction, trade.initial_tp1, settings.monitor_tp1_proximity):
-            # ── Trigger Phase 2 ────────────────────────────────────────────────
-            logger.info(
-                f"[{ticket}] Phase 2 triggered | {direction.upper()} {symbol} "
-                f"price={current_price:.5f} near TP1={trade.initial_tp1:.5f}"
-            )
-            # Try to extend TP to TP2 to avoid closing at TP1
-            new_tp = trade.tp2
+    entry = trade.entry_price
+    tp1 = trade.initial_tp1
+    tp_final = trade.tp2 if trade.tp2 is not None else tp1
+    phase = trade.phase
+    pip_size = _get_pip_size(symbol)
+
+    settings = get_settings()
+
+    if phase == PHASE_INITIAL:
+        # BUY: price moves up toward TP1; SELL: price moves down toward TP1
+        move_to_tp1 = abs(tp1 - entry)
+        threshold = (entry + move_to_tp1 * settings.phase1_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_trigger_pct)
+        
+        triggered = (price >= threshold) if is_buy else (price <= threshold)
+        if triggered:
+            locked_sl = (entry + move_to_tp1 * settings.phase1_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_lock_pct)
+            if not _is_valid_sl(symbol, direction, locked_sl):
+                logger.warning(f"[{ticket}] Partial lock SL {locked_sl:.5f} is invalid at price {price:.5f}")
+                return
             
-            # Initial Phase 2 SL tries to lock in TP1 profit.
-            # If TP1 is not a valid SL yet (price has not cleared it by stops level),
-            # we set SL to entry_price (breakeven) if valid, or fallback to initial SL.
-            if _is_valid_sl(symbol, direction, trade.initial_tp1):
-                new_sl = trade.initial_tp1
-            elif _is_valid_sl(symbol, direction, trade.entry_price):
-                new_sl = trade.entry_price
-            else:
-                new_sl = trade.initial_sl
+            if _modify_position(ticket, locked_sl, current_tp):
+                trade.phase = PHASE_PARTIAL_LOCK
+                trade.current_sl = locked_sl
+                trade.current_tp = current_tp
+                save_active_trades()
+                logger.info(f"[{ticket}] Partial lock SL moved | locked_sl={locked_sl:.5f} price={price:.5f}")
 
-            # Verify that both are valid before modifying
-            if not _is_valid_tp(symbol, direction, new_tp):
-                logger.warning(f"[{ticket}] Cannot trigger Phase 2: extended TP {new_tp:.5f} is invalid.")
+    elif phase == PHASE_PARTIAL_LOCK:
+        move_to_tp1 = abs(tp1 - entry)
+        triggered = (price >= tp1) if is_buy else (price <= tp1)
+        if triggered:
+            locked_sl = (entry + move_to_tp1 * settings.phase2_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase2_lock_pct)
+            if not _is_valid_sl(symbol, direction, locked_sl):
+                logger.warning(f"[{ticket}] TP1 hit SL {locked_sl:.5f} is invalid at price {price:.5f}")
+                return
+            if not _is_valid_tp(symbol, direction, tp_final):
+                logger.warning(f"[{ticket}] TP1 hit TP {tp_final:.5f} is invalid at price {price:.5f}")
                 return
 
-            if _modify_position(ticket, new_sl, new_tp):
-                trade.phase = PHASE_2_TRAILING
-                trade.current_sl = new_sl
-                trade.current_tp = new_tp
-                # Record the price when Phase 2 was triggered
-                tick = _get_tick(symbol)
-                trade.triggered_at = (tick["bid"] if is_buy else tick["ask"]) if tick else current_price
-            return
+            if _modify_position(ticket, locked_sl, tp_final):
+                trade.phase = PHASE_TP1_HIT
+                trade.current_sl = locked_sl
+                trade.current_tp = tp_final
+                trade.triggered_at = price
+                save_active_trades()
+                logger.info(f"[{ticket}] TP1 hit, extending TP | locked_sl={locked_sl:.5f} tp_final={tp_final:.5f} price={price:.5f}")
 
-    # ── Phase 2: trailing TP and SL ─────────────────────────────────────────
-    if trade.phase == PHASE_2_TRAILING:
-        tick = _get_tick(symbol)
-        if tick is None:
-            return
-        
-        current_bid_ask = tick["bid"] if is_buy else tick["ask"]
+    elif phase == PHASE_TP1_HIT:
+        # Trail SL: trail at settings.trailing_sl_pct of entry-to-TP2 total move distance
+        move_to_tp_final = abs(tp_final - entry)
+        trailing_distance = move_to_tp_final * settings.trailing_sl_pct
+        new_sl = (price - trailing_distance) if is_buy else (price + trailing_distance)
 
-        new_tp = trade.current_tp
-        new_sl = trade.current_sl
-
+        # Force SL to be at least initial_tp1 once price clears it
         if is_buy:
-            # Upgrade SL to initial_tp1 if it hasn't been set yet and is now valid
-            if new_sl < trade.initial_tp1 and _is_valid_sl(symbol, direction, trade.initial_tp1):
-                new_sl = trade.initial_tp1
+            if new_sl < tp1 and _is_valid_sl(symbol, direction, tp1):
+                new_sl = tp1
+            # Check if trailing SL has moved up
+            better = (current_sl == 0.0) or (new_sl > current_sl)
+        else:
+            if new_sl > tp1 and _is_valid_sl(symbol, direction, tp1):
+                new_sl = tp1
+            # Check if trailing SL has moved down
+            better = (current_sl == 0.0) or (new_sl < current_sl)
 
-            # Trail SL and TP upward if price moves in our direction
-            if current_bid_ask > trade.triggered_at:
-                delta = current_bid_ask - trade.triggered_at
-                potential_sl = new_sl + delta
-                potential_tp = new_tp + delta
-                
-                # Check if potential values are valid
-                if _is_valid_sl(symbol, direction, potential_sl) and _is_valid_tp(symbol, direction, potential_tp):
-                    new_sl = potential_sl
-                    new_tp = potential_tp
-        else:  # sell
-            # Upgrade SL to initial_tp1 if it hasn't been set yet and is now valid
-            if new_sl > trade.initial_tp1 and _is_valid_sl(symbol, direction, trade.initial_tp1):
-                new_sl = trade.initial_tp1
+        if better:
+            # Prevent tiny micro-adjustments
+            if current_sl != 0.0 and abs(new_sl - current_sl) < 1.0 * pip_size:
+                return
 
-            # Trail SL and TP downward if price moves in our direction
-            if current_bid_ask < trade.triggered_at:
-                delta = trade.triggered_at - current_bid_ask
-                potential_sl = new_sl - delta
-                potential_tp = new_tp - delta
-                
-                # Check if potential values are valid
-                if _is_valid_sl(symbol, direction, potential_sl) and _is_valid_tp(symbol, direction, potential_tp):
-                    new_sl = potential_sl
-                    new_tp = potential_tp
+            if not _is_valid_sl(symbol, direction, new_sl):
+                logger.warning(f"[{ticket}] Trailing SL {new_sl:.5f} is invalid at price {price:.5f}")
+                return
 
-        if new_tp != trade.current_tp or new_sl != trade.current_sl:
-            if _modify_position(ticket, new_sl, new_tp):
-                logger.info(
-                    f"[{ticket}] Trailing update | {direction.upper()} {symbol} "
-                    f"new_sl={new_sl:.5f} new_tp={new_tp:.5f}"
-                )
-                trade.current_tp = new_tp
+            if _modify_position(ticket, new_sl, tp_final):
                 trade.current_sl = new_sl
-                # Update the baseline if we trailed
-                trade.triggered_at = current_bid_ask
+                save_active_trades()
+                logger.info(f"[{ticket}] Trailing SL updated | new_sl={new_sl:.5f} price={price:.5f}")
 
 
 def _modify_position(ticket: int, new_sl: float, new_tp: float) -> bool:

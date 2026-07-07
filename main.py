@@ -24,6 +24,7 @@ from mt5_service import (
     active_trades,
     register_trade,
     unregister_trade,
+    load_active_trades,
     MT5ConnectionError,
     MT5TradeError,
 )
@@ -38,205 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Thread-safe flag to stop the trade manager loop
-_manager_running = True
-
-# Minimum pip difference before updating SL (avoids spamming MT5)
-SL_CHANGE_THRESHOLD = 5.0
-
-
-# ── Adaptive SL/TP management ───────────────────────────────────────────────
-
-def _get_current_price(symbol: str, direction: str) -> float | None:
-    """Return current bid/ask for the given symbol based on direction."""
-    tick = mt5.symbol_info_tick(symbol)
-    if tick is None:
-        return None
-    return tick.bid if direction == "sell" else tick.ask
-
-
-def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
-    """Ensure SL is on the correct side of current price (not triggering immediately)."""
-    tick = mt5.symbol_info_tick(symbol)
-    if tick is None:
-        return False
-    current = tick.bid
-    stops_level = mt5.symbol_info(symbol).trade_stops_level
-    if direction == "buy":
-        return sl < current - stops_level * mt5.symbol_info(symbol).point
-    else:
-        return sl > current + stops_level * mt5.symbol_info(symbol).point
-
-
-def _manage_buy_trade(trade: TradeInfo, position) -> None:
-    """
-    Apply adaptive SL/TP logic for a BUY position.
-
-    Phases:
-      phase1        → partial_lock  (75% of move to TP1, lock 20% as partial profit)
-      partial_lock → tp1_hit       (price reaches TP1, extend TP to TP_Final)
-      tp1_hit       → trailing      (SL trails upward, TP stays at TP_Final)
-    """
-    symbol = trade.symbol
-    entry = trade.entry_price
-    tp1 = trade.initial_tp1
-    tp_final = trade.tp2 if trade.tp2 is not None else tp1
-    phase = trade.phase
-    order_id = trade.order_id
-
-    price = _get_current_price(symbol, "buy")
-    if price is None:
-        return
-
-    move_to_tp1 = tp1 - entry
-    current_sl = position.sl
-
-    if phase == "initial":
-        locked_sl = entry + move_to_tp1 * 0.20
-        threshold = entry + move_to_tp1 * 0.75
-        if price >= threshold:
-            if not _is_valid_sl(symbol, "buy", locked_sl):
-                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl:.5f} too close to price {price:.5f}")
-                return
-            modify_position_sl_tp(position.ticket, locked_sl, tp1)
-            trade.phase = "partial_lock"
-            trade.current_sl = locked_sl
-            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl:.5f} price={price:.5f}")
-
-    elif phase == "partial_lock":
-        if price >= tp1:
-            locked_sl = entry + move_to_tp1 * 0.30
-            if not _is_valid_sl(symbol, "buy", locked_sl):
-                logger.warning(f"Trade {order_id}: locked SL {locked_sl:.5f} too close to price {price:.5f}")
-                return
-            modify_position_sl_tp(position.ticket, locked_sl, tp_final)
-            trade.phase = "tp1_hit"
-            trade.current_sl = locked_sl
-            trade.current_tp = tp_final
-            logger.info(f"TP1 reached, extending TP | order_id={order_id} tp_final={tp_final:.5f}")
-
-    elif phase == "tp1_hit":
-        trailing_distance = (tp_final - entry) * 0.20
-        new_sl = price - trailing_distance
-        if new_sl > current_sl:
-            if not _is_valid_sl(symbol, "buy", new_sl):
-                logger.warning(f"Trade {order_id}: trailing SL {new_sl:.5f} too close to price {price:.5f}")
-                return
-            if abs(new_sl - current_sl) < SL_CHANGE_THRESHOLD:
-                return
-            modify_position_sl_tp(position.ticket, new_sl, tp_final)
-            trade.current_sl = new_sl
-            logger.info(f"Trailing SL updated | order_id={order_id} new_sl={new_sl:.5f} price={price:.5f}")
-
-
-def _manage_sell_trade(trade: TradeInfo, position) -> None:
-    """
-    Apply adaptive SL/TP logic for a SELL position (mirror of BUY).
-    """
-    symbol = trade.symbol
-    entry = trade.entry_price
-    tp1 = trade.initial_tp1
-    tp_final = trade.tp2 if trade.tp2 is not None else tp1
-    phase = trade.phase
-    order_id = trade.order_id
-
-    price = _get_current_price(symbol, "sell")
-    if price is None:
-        return
-
-    move_to_tp1 = entry - tp1
-    current_sl = position.sl
-
-    if phase == "initial":
-        locked_sl = entry - move_to_tp1 * 0.20
-        threshold = entry - move_to_tp1 * 0.75
-        if price <= threshold:
-            if not _is_valid_sl(symbol, "sell", locked_sl):
-                logger.warning(f"Trade {order_id}: partial lock SL {locked_sl:.5f} too close to price {price:.5f}")
-                return
-            modify_position_sl_tp(position.ticket, locked_sl, tp1)
-            trade.phase = "partial_lock"
-            trade.current_sl = locked_sl
-            logger.info(f"Partial lock SL moved | order_id={order_id} locked_sl={locked_sl:.5f} price={price:.5f}")
-
-    elif phase == "partial_lock":
-        if price <= tp1:
-            locked_sl = entry - move_to_tp1 * 0.30
-            if not _is_valid_sl(symbol, "sell", locked_sl):
-                logger.warning(f"Trade {order_id}: locked SL {locked_sl:.5f} too close to price {price:.5f}")
-                return
-            modify_position_sl_tp(position.ticket, locked_sl, tp_final)
-            trade.phase = "tp1_hit"
-            trade.current_sl = locked_sl
-            trade.current_tp = tp_final
-            logger.info(f"TP1 reached, extending TP | order_id={order_id} tp_final={tp_final:.5f}")
-
-    elif phase == "tp1_hit":
-        trailing_distance = (entry - tp_final) * 0.20
-        new_sl = price + trailing_distance
-        if new_sl < current_sl:
-            if not _is_valid_sl(symbol, "sell", new_sl):
-                logger.warning(f"Trade {order_id}: trailing SL {new_sl:.5f} too close to price {price:.5f}")
-                return
-            if abs(new_sl - current_sl) < SL_CHANGE_THRESHOLD:
-                return
-            modify_position_sl_tp(position.ticket, new_sl, tp_final)
-            trade.current_sl = new_sl
-            logger.info(f"Trailing SL updated | order_id={order_id} new_sl={new_sl:.5f} price={price:.5f}")
-
-
-def manage_open_positions() -> None:
-    """
-    Background task: scan all open MT5 positions (magic=10001) and apply
-    adaptive SL/TP management via the shared active_trades registry.
-    """
-    settings = get_settings()
-    positions = mt5.positions_get()
-    if positions is None:
-        logger.debug("No open positions found.")
-        return
-
-    open_ticket_ids = set()
-    for position in positions:
-        if position.magic != settings.magic_number:
-            continue
-
-        trade = active_trades.get(position.ticket)
-        if trade is None:
-            continue
-
-        open_ticket_ids.add(position.ticket)
-
-        direction = trade.direction
-        if direction == "buy":
-            _manage_buy_trade(trade, position)
-        elif direction == "sell":
-            _manage_sell_trade(trade, position)
-
-    # Unregister any trades that are no longer open in MT5
-    stale = [tid for tid in active_trades if tid not in open_ticket_ids]
-    for tid in stale:
-        unregister_trade(tid)
-        logger.info(f"[{tid}] Removed from registry — position no longer open")
-
-
-def _trade_manager_loop() -> None:
-    """Daemon thread loop — runs manage_open_positions every 2 seconds."""
-    logger.info("Trade manager thread started.")
-    while _manager_running:
-        try:
-            manage_open_positions()
-        except Exception:
-            logger.exception("Unexpected error in trade manager loop")
-        time.sleep(2.0)
-    logger.info("Trade manager thread stopped.")
-
-
-def start_trade_manager() -> None:
-    """Launch the background trade manager thread (daemon)."""
-    t = threading.Thread(target=_trade_manager_loop, daemon=True)
-    t.start()
-    logger.info("Trade manager background thread launched.")
+# Thread-safe flag to stop the trade manager loop (deprecated, consolidated into trade_monitor.py)
 
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
@@ -251,7 +54,10 @@ async def lifespan(app: FastAPI):
         connect_mt5()
     except MT5ConnectionError as e:
         logger.error(f"Failed to connect to MT5 on startup: {e}")
-    start_trade_manager()
+    
+    # Restore active trades from persistence
+    load_active_trades()
+    
     start_monitor()
     
     # Auto-start the signal watcher
@@ -259,8 +65,6 @@ async def lifespan(app: FastAPI):
     start_watcher()
     
     yield
-    global _manager_running
-    _manager_running = False
     stop_monitor()
     
     # Stop the signal watcher on shutdown

@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     monitor_poll_interval: int = 2   # seconds between each monitor cycle
     monitor_tp1_proximity: float = 5.0  # how close price must be to TP1 to trigger Phase 2 (in pips, e.g. 5.0)
 
+    # Adaptive SL/TP Customization
+    phase1_trigger_pct: float = 0.75       # threshold percentage of entry-to-TP1 distance to trigger Phase 1
+    phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
+    phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
+    trailing_sl_pct: float = 0.20          # trailing SL distance as percentage of entry-to-TP2 total move
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
