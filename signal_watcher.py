@@ -35,6 +35,7 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
     "USD/JPY": "USDJPY",
     "AUD/USD": "AUDUSD",
     "BTC/USD": "BTCUSD",
+    "XAU/USD": "XAUUSD",
 }
 
 # JPY pairs trade in 0.01 increments (1 pip = 0.01); non-JPY in 0.0001 (1 pip = 0.0001).
@@ -65,6 +66,8 @@ def _correct_levels_from_pips(
     """
     if symbol == "BTCUSD":
         pip = 1.0
+    elif symbol == "XAUUSD":
+        pip = 0.1  # 1 Gold pip = $0.10
     else:
         pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
     sl_dist_pips = round(abs(sl) / pip)

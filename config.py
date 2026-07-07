@@ -17,15 +17,15 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Trading
-    allowed_symbols: list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "BTCUSD"]
+    allowed_symbols: list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "BTCUSD", "XAUUSD"]
     default_volume: float = 0.01          # default trade volume in lots
     xauusd_volume: float = 0.01          # legacy, keeping for compatibility
     magic_number: int = 10001
     default_deviation: int = 20
     default_comment: str = "SignalTrade Auto"
-    max_positions_per_symbol: int = 10
-    max_buy_positions_per_symbol: int = 5
-    max_sell_positions_per_symbol: int = 5
+    max_positions_per_symbol: int = 2
+    max_buy_positions_per_symbol: int = 1
+    max_sell_positions_per_symbol: int = 1
     tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
