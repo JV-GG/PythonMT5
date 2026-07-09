@@ -181,23 +181,57 @@ def _process_one_position(pos: dict) -> None:
 
     elif phase == PHASE_PARTIAL_LOCK:
         move_to_tp1 = abs(tp1 - entry)
-        triggered = (price >= tp1) if is_buy else (price <= tp1)
-        if triggered:
+        near_tp1 = _is_price_near_tp1(symbol, direction, tp1, settings.monitor_tp1_proximity)
+        hit_tp1 = (price >= tp1) if is_buy else (price <= tp1)
+        
+        if near_tp1 or hit_tp1:
             locked_sl = (entry + move_to_tp1 * settings.phase2_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase2_lock_pct)
+            
+            # Determine initial extended TP for Phase 3
+            if trade.tp2 is not None:
+                initial_tp_final = trade.tp2
+            else:
+                initial_tp_final = (tp1 + move_to_tp1) if is_buy else (tp1 - move_to_tp1)
+
             if not _is_valid_sl(symbol, direction, locked_sl):
                 logger.warning(f"[{ticket}] TP1 hit SL {locked_sl:.5f} is invalid at price {price:.5f}")
                 return
-            if not _is_valid_tp(symbol, direction, tp_final):
-                logger.warning(f"[{ticket}] TP1 hit TP {tp_final:.5f} is invalid at price {price:.5f}")
+            if not _is_valid_tp(symbol, direction, initial_tp_final):
+                logger.warning(f"[{ticket}] TP1 hit TP {initial_tp_final:.5f} is invalid at price {price:.5f}")
                 return
 
-            if _modify_position(ticket, locked_sl, tp_final):
+            if _modify_position(ticket, locked_sl, initial_tp_final):
                 trade.phase = PHASE_TP1_HIT
                 trade.current_sl = locked_sl
-                trade.current_tp = tp_final
+                trade.current_tp = initial_tp_final
                 trade.triggered_at = price
                 save_active_trades()
-                logger.info(f"[{ticket}] TP1 hit, extending TP | locked_sl={locked_sl:.5f} tp_final={tp_final:.5f} price={price:.5f}")
+                logger.info(f"[{ticket}] TP1 hit/approached, extending TP | locked_sl={locked_sl:.5f} tp_final={initial_tp_final:.5f} price={price:.5f}")
+        else:
+            # SL trails: maintain the trigger-to-lock distance (e.g. 75% - 50% = 25% of TP1 distance)
+            sl_distance_pct = settings.phase1_trigger_pct - settings.phase1_lock_pct
+            sl_distance = move_to_tp1 * sl_distance_pct
+            new_sl = (price - sl_distance) if is_buy else (price + sl_distance)
+
+            # Check if trailing SL has moved in profit direction
+            if is_buy:
+                better = (current_sl == 0.0) or (new_sl > current_sl)
+            else:
+                better = (current_sl == 0.0) or (new_sl < current_sl)
+
+            if better:
+                # Prevent tiny micro-adjustments
+                if current_sl != 0.0 and abs(new_sl - current_sl) < 1.0 * pip_size:
+                    return
+
+                if not _is_valid_sl(symbol, direction, new_sl):
+                    logger.warning(f"[{ticket}] PHASE_PARTIAL_LOCK trailing SL {new_sl:.5f} is invalid at price {price:.5f}")
+                    return
+
+                if _modify_position(ticket, new_sl, current_tp):
+                    trade.current_sl = new_sl
+                    save_active_trades()
+                    logger.info(f"[{ticket}] PHASE_PARTIAL_LOCK trailing SL updated | new_sl={new_sl:.5f} price={price:.5f}")
 
     elif phase == PHASE_TP1_HIT:
         # Trail SL: trail at settings.trailing_sl_pct of entry-to-TP2 total move distance
@@ -209,27 +243,47 @@ def _process_one_position(pos: dict) -> None:
         if is_buy:
             if new_sl < tp1 and _is_valid_sl(symbol, direction, tp1):
                 new_sl = tp1
-            # Check if trailing SL has moved up
-            better = (current_sl == 0.0) or (new_sl > current_sl)
+            sl_better = (current_sl == 0.0) or (new_sl > current_sl)
         else:
             if new_sl > tp1 and _is_valid_sl(symbol, direction, tp1):
                 new_sl = tp1
-            # Check if trailing SL has moved down
-            better = (current_sl == 0.0) or (new_sl < current_sl)
+            sl_better = (current_sl == 0.0) or (new_sl < current_sl)
 
-        if better:
+        # Trail TP
+        if trade.tp2 is not None:
+            tp_distance = abs(trade.tp2 - tp1)
+        else:
+            tp_distance = abs(tp1 - entry)
+        new_tp = (price + tp_distance) if is_buy else (price - tp_distance)
+
+        if is_buy:
+            tp_better = (current_tp == 0.0) or (new_tp > current_tp)
+        else:
+            tp_better = (current_tp == 0.0) or (new_tp < current_tp)
+
+        if sl_better or tp_better:
+            final_sl = new_sl if sl_better else current_sl
+            final_tp = new_tp if tp_better else current_tp
+
             # Prevent tiny micro-adjustments
-            if current_sl != 0.0 and abs(new_sl - current_sl) < 1.0 * pip_size:
+            sl_change = abs(final_sl - current_sl) if current_sl != 0.0 else 999.0
+            tp_change = abs(final_tp - current_tp) if current_tp != 0.0 else 999.0
+
+            if max(sl_change, tp_change) < 1.0 * pip_size:
                 return
 
-            if not _is_valid_sl(symbol, direction, new_sl):
-                logger.warning(f"[{ticket}] Trailing SL {new_sl:.5f} is invalid at price {price:.5f}")
+            if not _is_valid_sl(symbol, direction, final_sl):
+                logger.warning(f"[{ticket}] Trailing SL {final_sl:.5f} is invalid at price {price:.5f}")
+                return
+            if not _is_valid_tp(symbol, direction, final_tp):
+                logger.warning(f"[{ticket}] Trailing TP {final_tp:.5f} is invalid at price {price:.5f}")
                 return
 
-            if _modify_position(ticket, new_sl, tp_final):
-                trade.current_sl = new_sl
+            if _modify_position(ticket, final_sl, final_tp):
+                trade.current_sl = final_sl
+                trade.current_tp = final_tp
                 save_active_trades()
-                logger.info(f"[{ticket}] Trailing SL updated | new_sl={new_sl:.5f} price={price:.5f}")
+                logger.info(f"[{ticket}] Trailing updated | new_sl={final_sl:.5f} new_tp={final_tp:.5f} price={price:.5f}")
 
 
 def _modify_position(ticket: int, new_sl: float, new_tp: float) -> bool:

@@ -3,6 +3,7 @@ MetaTrader 5 service layer.
 Handles MT5 connection, trade execution, spacing checks, and risk management.
 """
 import time
+from datetime import datetime, timezone
 
 import MetaTrader5 as mt5
 import logging
@@ -276,6 +277,21 @@ def get_dynamic_min_distance(symbol: str) -> float:
     return fallback
 
 
+SESSIONS_UTC = {
+    "asia": (22, 9),      # Tokyo/Sydney (22:00 to 09:00 UTC)
+    "london": (8, 16),    # London (08:00 to 16:00 UTC)
+    "us": (13, 22),       # New York (13:00 to 22:00 UTC)
+}
+
+
+def _is_hour_in_session(hour: int, start: int, end: int) -> bool:
+    """Return True if hour falls within start (inclusive) and end (exclusive)."""
+    if start <= end:
+        return start <= hour < end
+    else:  # Crosses midnight (e.g., 22 to 9)
+        return hour >= start or hour < end
+
+
 def should_execute_trade(
     symbol: str,
     direction: str,
@@ -298,6 +314,45 @@ def should_execute_trade(
         False → trade is blocked (limit reached)
     """
     settings = get_settings()
+
+    # Session restrictions check
+    if settings.session_restrictions_enabled:
+        utc_now = datetime.now(timezone.utc)
+        current_hour = utc_now.hour
+
+        in_allowed = False
+        in_avoid = False
+        matched_allowed_sessions = []
+        matched_avoid_sessions = []
+
+        for sess_name, (start, end) in SESSIONS_UTC.items():
+            if _is_hour_in_session(current_hour, start, end):
+                if sess_name in settings.allowed_sessions:
+                    in_allowed = True
+                    matched_allowed_sessions.append(sess_name)
+                if sess_name in settings.avoid_sessions:
+                    in_avoid = True
+                    matched_avoid_sessions.append(sess_name)
+
+        if in_avoid:
+            logger.warning(
+                f"Trade blocked (session restrictions): Current time {utc_now.strftime('%H:%M:%S')} UTC "
+                f"is within avoided session(s) {matched_avoid_sessions}."
+            )
+            return False
+
+        if not in_allowed:
+            logger.warning(
+                f"Trade blocked (session restrictions): Current time {utc_now.strftime('%H:%M:%S')} UTC "
+                f"is not within any allowed session(s) {settings.allowed_sessions}."
+            )
+            return False
+
+        logger.info(
+            f"Session check passed: Current time {utc_now.strftime('%H:%M:%S')} UTC is in allowed "
+            f"session(s) {matched_allowed_sessions} and not in avoided sessions."
+        )
+
     max_total = settings.max_positions_per_symbol
     max_buy = settings.max_buy_positions_per_symbol
     max_sell = settings.max_sell_positions_per_symbol

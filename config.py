@@ -2,8 +2,10 @@
 Application configuration.
 All sensitive credentials and tunable parameters are centralized here.
 """
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Any
 
 
 class Settings(BaseSettings):
@@ -40,6 +42,18 @@ class Settings(BaseSettings):
     phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
     phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
     trailing_sl_pct: float = 0.20          # trailing SL distance as percentage of entry-to-TP2 total move
+
+    # Trading Session Restrictions
+    session_restrictions_enabled: bool = True
+    allowed_sessions: str | list[str] = ["london", "asia"]
+    avoid_sessions: str | list[str] = ["us"]
+
+    @field_validator("allowed_sessions", "avoid_sessions", mode="before")
+    @classmethod
+    def parse_list(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            return [x.strip() for x in v.split(",") if x.strip()]
+        return v
 
     # Server
     host: str = "0.0.0.0"
