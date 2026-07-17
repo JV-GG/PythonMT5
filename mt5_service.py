@@ -315,6 +315,38 @@ def should_execute_trade(
     """
     settings = get_settings()
 
+    # Local time restrictions check
+    if settings.local_time_restriction_enabled:
+        from datetime import time as dt_time
+        local_now = datetime.now()
+        current_time = local_now.time()
+
+        try:
+            sh, sm = map(int, settings.local_time_start.split(":"))
+            eh, em = map(int, settings.local_time_end.split(":"))
+            start_time = dt_time(sh, sm)
+            end_time = dt_time(eh, em)
+        except Exception:
+            start_time = dt_time(10, 0)
+            end_time = dt_time(20, 0)
+
+        if start_time <= end_time:
+            allowed = start_time <= current_time < end_time
+        else:
+            allowed = current_time >= start_time or current_time < end_time
+
+        if not allowed:
+            logger.warning(
+                f"Trade blocked (local time restrictions): Current local time {local_now.strftime('%H:%M:%S')} "
+                f"is outside the allowed window {settings.local_time_start} - {settings.local_time_end}."
+            )
+            return False
+
+        logger.info(
+            f"Local time check passed: Current local time {local_now.strftime('%H:%M:%S')} "
+            f"is within the allowed window {settings.local_time_start} - {settings.local_time_end}."
+        )
+
     # Session restrictions check
     if settings.session_restrictions_enabled:
         utc_now = datetime.now(timezone.utc)

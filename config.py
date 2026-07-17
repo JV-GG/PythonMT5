@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Trading
-    allowed_symbols: list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "BTCUSD", "XAUUSD"]
+    allowed_symbols: str | list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "BTCUSD", "XAUUSD"]
     default_volume: float = 0.01          # default trade volume in lots
     xauusd_volume: float = 0.01          # legacy, keeping for compatibility
     magic_number: int = 10001
@@ -48,7 +48,16 @@ class Settings(BaseSettings):
     allowed_sessions: str | list[str] = ["london", "asia"]
     avoid_sessions: str | list[str] = ["us"]
 
-    @field_validator("allowed_sessions", "avoid_sessions", mode="before")
+    # Local Time Restrictions
+    local_time_restriction_enabled: bool = True
+    local_time_start: str = "10:00"
+    local_time_end: str = "20:00"
+
+    # XAUUSD Specific Volumes
+    xauusd_weekday_volume: float = 0.10
+    xauusd_friday_volume: float = 0.01
+
+    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", mode="before")
     @classmethod
     def parse_list(cls, v: Any) -> list[str]:
         if isinstance(v, str):

@@ -1,1 +1,15 @@
-{}
+{
+    "1612686981": {
+        "order_id": 1612686981,
+        "symbol": "EURUSD",
+        "direction": "sell",
+        "entry_price": 1.14262,
+        "initial_sl": 1.14428,
+        "initial_tp1": 1.1418,
+        "tp2": 1.14087,
+        "phase": "initial",
+        "current_sl": 1.14428,
+        "current_tp": 1.1418,
+        "triggered_at": 0.0
+    }
+}

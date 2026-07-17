@@ -5,6 +5,7 @@ Runs as a background asyncio task managed via FastAPI endpoints.
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -238,6 +239,14 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             return None
 
     volume = settings.default_volume
+    if mt5_symbol == "XAUUSD":
+        weekday = datetime.now().weekday()
+        if weekday == 4:  # Friday
+            volume = settings.xauusd_friday_volume
+        elif weekday in (0, 1, 2, 3):  # Monday - Thursday
+            volume = settings.xauusd_weekday_volume
+        else:  # Weekend fallback
+            volume = settings.xauusd_friday_volume
 
     # ── SL/TP reduction (spread buffer) ──────────────────────────────────
     # Pull SL and TP closer to entry by reduction_pct of the entry→level
@@ -325,6 +334,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     settings = get_settings()
 
     for pair_code in SIGNALTRADE_PAIR_CODES:
+        if pair_code not in settings.allowed_symbols:
+            continue
         data = await _fetch_signal(client, pair_code)
         if data is None:
             continue
