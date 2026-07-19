@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-import MetaTrader5 as mt5
+import MetaTrader5 as mt5  # type: ignore
 
 from config import get_settings
 from mt5_service import (
@@ -238,9 +238,12 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             )
             return None
 
-    volume = settings.default_volume
+    volume = 0.01 if mt5_symbol == "EURUSD" else settings.default_volume
     if mt5_symbol == "XAUUSD":
-        weekday = datetime.now().weekday()
+        from datetime import timezone as dt_timezone, timedelta as dt_timedelta
+        malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+        malaysia_now = datetime.now(malaysia_tz)
+        weekday = malaysia_now.weekday()
         if weekday == 4:  # Friday
             volume = settings.xauusd_friday_volume
         elif weekday in (0, 1, 2, 3):  # Monday - Thursday

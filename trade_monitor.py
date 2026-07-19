@@ -17,7 +17,7 @@ Started by main.py on app startup. Stops on app shutdown.
 import asyncio
 import logging
 
-import MetaTrader5 as mt5
+import MetaTrader5 as mt5  # type: ignore
 
 from config import get_settings
 from schemas import PHASE_INITIAL, PHASE_PARTIAL_LOCK, PHASE_TP1_HIT, TradeInfo

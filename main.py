@@ -6,7 +6,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-import MetaTrader5 as mt5
+import MetaTrader5 as mt5  # type: ignore
 from fastapi import FastAPI, HTTPException, status
 
 from config import get_settings

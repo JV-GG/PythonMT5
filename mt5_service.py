@@ -5,7 +5,7 @@ Handles MT5 connection, trade execution, spacing checks, and risk management.
 import time
 from datetime import datetime, timezone
 
-import MetaTrader5 as mt5
+import MetaTrader5 as mt5  # type: ignore
 import logging
 from typing import Any
 
@@ -315,11 +315,30 @@ def should_execute_trade(
     """
     settings = get_settings()
 
-    # Local time restrictions check
+    # ── Malaysia Timezone Calculations ───────────────────────────────────────
+    from datetime import time as dt_time, timezone as dt_timezone, timedelta as dt_timedelta
+    malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+    malaysia_now = datetime.now(malaysia_tz)
+
+    # Malaysia Friday block for XAUUSD (Do not trade XAUUSD on Friday Malaysia time)
+    if symbol == "XAUUSD" and malaysia_now.weekday() == 4:  # 4 is Friday
+        logger.warning(
+            f"Trade blocked (Friday XAUUSD restriction): Today is Friday in Malaysia time ({malaysia_now.strftime('%Y-%m-%d')}) "
+            f"and trading XAUUSD is disabled on Fridays."
+        )
+        return False
+
+    # Weekend block for non-crypto symbols (Saturday and Sunday)
+    if symbol != "BTCUSD" and malaysia_now.weekday() in (5, 6):  # 5 is Saturday, 6 is Sunday
+        logger.warning(
+            f"Trade blocked (Weekend restriction): Today is weekend in Malaysia time ({malaysia_now.strftime('%A')}) "
+            f"and trading {symbol} is disabled on weekends."
+        )
+        return False
+
+    # Local time restrictions check (enforced in Malaysia time)
     if settings.local_time_restriction_enabled:
-        from datetime import time as dt_time
-        local_now = datetime.now()
-        current_time = local_now.time()
+        current_time = malaysia_now.time()
 
         try:
             sh, sm = map(int, settings.local_time_start.split(":"))
@@ -337,13 +356,13 @@ def should_execute_trade(
 
         if not allowed:
             logger.warning(
-                f"Trade blocked (local time restrictions): Current local time {local_now.strftime('%H:%M:%S')} "
+                f"Trade blocked (local time restrictions): Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
                 f"is outside the allowed window {settings.local_time_start} - {settings.local_time_end}."
             )
             return False
 
         logger.info(
-            f"Local time check passed: Current local time {local_now.strftime('%H:%M:%S')} "
+            f"Local time check passed: Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
             f"is within the allowed window {settings.local_time_start} - {settings.local_time_end}."
         )
 

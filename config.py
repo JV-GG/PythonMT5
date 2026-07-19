@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     max_positions_per_symbol: int = 2
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
-    tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
+    tp_reduction_pct: float = 0.15         # reduce TP by 15% of entry→TP distance (spread buffer)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: int = 60  # seconds between each poll
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     local_time_end: str = "20:00"
 
     # XAUUSD Specific Volumes
-    xauusd_weekday_volume: float = 0.10
+    xauusd_weekday_volume: float = 0.01
     xauusd_friday_volume: float = 0.01
 
     @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", mode="before")
