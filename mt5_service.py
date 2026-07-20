@@ -170,10 +170,12 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         f"volume={result.volume} retcode={result.retcode}"
     )
 
+    exec_price = result.price if (result.price is not None and result.price > 0) else price
+
     return TradeResponse(
         success=True,
         order_id=result.order,
-        executed_price=result.price,
+        executed_price=exec_price,
         message=f"Order {result.order} executed successfully.",
     )
 

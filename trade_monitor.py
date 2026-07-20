@@ -63,8 +63,18 @@ def _get_tick(symbol: str) -> dict | None:
 
 # ── Stop level validations ────────────────────────────────────────────────────
 
+MAX_SL_DISTANCE: dict[str, float] = {
+    "XAUUSD": 30.0,    # Max $30.00 price distance on Gold
+    "BTCUSD": 2500.0,  # Max $2500 price distance on BTC
+    "EURUSD": 0.0080,  # Max 80 pips
+    "USDJPY": 1.20,    # Max 120 pips
+    "AUDUSD": 0.0080,  # Max 80 pips
+    "GBPUSD": 0.0080,  # Max 80 pips
+}
+
+
 def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
-    """Ensure SL is on the correct side of current price and respects stops level."""
+    """Ensure SL is on the correct side of current price and respects stops level & max SL distance."""
     tick = _get_tick(symbol)
     if tick is None:
         return False
@@ -75,6 +85,11 @@ def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
     point = sym_info.point
     min_distance = max(stops_level, 5) * point
     
+    current_price = tick["bid"] if direction == "buy" else tick["ask"]
+    max_sl_dist = MAX_SL_DISTANCE.get(symbol, 50.0)
+    if abs(current_price - sl) > max_sl_dist:
+        return False
+
     if direction == "buy":
         return sl < tick["bid"] - min_distance
     else:
@@ -151,6 +166,12 @@ def _process_one_position(pos: dict) -> None:
     if tick is None:
         return
     price = tick["bid"] if is_buy else tick["ask"]
+
+    # Fallback to position price_open if stored entry_price is invalid (0.0)
+    if trade.entry_price <= 0:
+        trade.entry_price = pos["price_open"]
+        save_active_trades()
+        logger.info(f"[{ticket}] Fixed 0.0 entry_price -> set to position price_open={pos['price_open']}")
 
     entry = trade.entry_price
     tp1 = trade.initial_tp1
