@@ -25,6 +25,9 @@ build/
 *.log
 logs/
 
+# Local Runtime Data
+active_trades.json
+
 # OS
 .DS_Store
 Thumbs.db
