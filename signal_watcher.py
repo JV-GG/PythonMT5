@@ -43,49 +43,89 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
 _JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "AUDJPY", "CADJPY", "CHFJPY"}
 
 
-def _is_sane_levels(entry: float, sl: float, tp: float, direction: str) -> bool:
+# Maximum allowed SL distance (in price units) to prevent absurd SL levels
+MAX_SL_DISTANCE: dict[str, float] = {
+    "XAUUSD": 30.0,    # Max $30.00 price distance on Gold (3,000 points / 300 pips)
+    "BTCUSD": 2500.0,  # Max $2,500.00 price distance on BTC
+    "EURUSD": 0.0080,  # Max 80 pips
+    "USDJPY": 1.20,    # Max 120 pips
+    "AUDUSD": 0.0080,  # Max 80 pips
+    "GBPUSD": 0.0080,  # Max 80 pips
+}
+
+
+def _is_sane_levels(entry: float, sl: float, tp: float, direction: str, symbol: str = "") -> bool:
     """
-    Returns True when SL/TP are on the correct sides of entry for the given direction.
+    Returns True when SL/TP are valid absolute price levels on correct sides of entry
+    and within realistic safety limits.
     BUY  → SL < entry < TP
     SELL → TP < entry < SL
     """
     if direction == "buy":
-        return sl < entry < tp
+        if not (sl < entry < tp):
+            return False
     else:
-        return tp < entry < sl
+        if not (tp < entry < sl):
+            return False
+
+    # Detect if SL or TP is a raw pip/point number instead of an absolute price level
+    # (e.g. sl=400 or sl=35 when entry=4003 or entry=1.08)
+    if sl < entry * 0.5 or tp < entry * 0.5:
+        return False
+
+    # Check maximum SL distance safety threshold
+    max_sl_dist = MAX_SL_DISTANCE.get(symbol, 50.0)
+    sl_dist = abs(entry - sl)
+    if sl_dist > max_sl_dist:
+        return False
+
+    return True
 
 
 def _correct_levels_from_pips(
     entry: float, sl: float, tp: float, direction: str, symbol: str
 ) -> tuple[float, float]:
     """
-    Detects when SignalTrade sent SL/TP as raw pips instead of price levels, computes
-    the intended distance in pips, and returns corrected absolute price levels.
-
-    Heuristic: if the raw levels are insane (SL on wrong side of entry), treat the SL
-    value as a pip distance, convert to a price level, then derive TP at 1.5× risk.
+    Detects when SignalTrade sent SL/TP as raw pips/points instead of price levels,
+    converts them accurately using appropriate price unit scaling, and caps SL at safety limit.
     """
     if symbol == "BTCUSD":
-        pip = 1.0
+        unit = 1.0        # $1.00 per point
     elif symbol == "XAUUSD":
-        pip = 0.1  # 1 Gold pip = $0.10
+        unit = 0.01       # $0.01 per point (e.g. 380 points = $3.80, 400 points = $4.00)
     else:
-        pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
-    sl_dist_pips = round(abs(sl) / pip)
-    tp_dist_pips = round(abs(tp) / pip)
+        unit = 0.01 if symbol in _JPY_PAIRS else 0.0001
+
+    max_sl_dist = MAX_SL_DISTANCE.get(symbol, 50.0)
+
+    # Determine SL price distance
+    if sl < entry * 0.5:
+        # Raw points/pips sent from SignalTrade
+        sl_dist = abs(sl) * unit
+    else:
+        # Absolute price sent, but distance might be out of range
+        sl_dist = abs(entry - sl)
+
+    # Cap SL distance to maximum safety distance
+    sl_dist = min(sl_dist, max_sl_dist)
+
+    # Determine TP price distance
+    if tp < entry * 0.5:
+        tp_dist = abs(tp) * unit
+    else:
+        tp_dist = abs(tp - entry)
 
     if direction == "buy":
-        corrected_sl = round(entry - sl_dist_pips * pip, 5)
-        corrected_tp = round(entry + max(tp_dist_pips, round(sl_dist_pips * 1.5)) * pip, 5)
+        corrected_sl = round(entry - sl_dist, 5)
+        corrected_tp = round(entry + tp_dist, 5)
     else:
-        corrected_sl = round(entry + sl_dist_pips * pip, 5)
-        corrected_tp = round(entry - max(tp_dist_pips, round(sl_dist_pips * 1.5)) * pip, 5)
+        corrected_sl = round(entry + sl_dist, 5)
+        corrected_tp = round(entry - tp_dist, 5)
 
     logger.warning(
-        f"Sanity correction | symbol={symbol} entry={entry} "
-        f"direction={direction} raw_sl={sl} raw_tp={tp} "
-        f"→ corrected_sl={corrected_sl} corrected_tp={corrected_tp} "
-        f"(detected ~{sl_dist_pips} pips / {tp_dist_pips} pips)"
+        f"Sanity correction applied for {symbol} | entry={entry:.5f} direction={direction} "
+        f"raw_sl={sl} raw_tp={tp} → corrected_sl={corrected_sl:.5f} corrected_tp={corrected_tp:.5f} "
+        f"(sl_dist={sl_dist:.2f}, tp_dist={tp_dist:.2f})"
     )
     return corrected_sl, corrected_tp
 
@@ -222,7 +262,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         return None
 
     # Sanity-check SL/TP: detect and auto-correct pips-vs-price confusion from SignalTrade
-    if not _is_sane_levels(entry, sl, tp1_value, resolved_direction):
+    if not _is_sane_levels(entry, sl, tp1_value, resolved_direction, mt5_symbol):
         logger.warning(
             f"Insane SL/TP detected for {pair_display} — SL={sl} TP={tp1_value} "
             f"direction={resolved_direction} entry={entry}. Attempting pips→price correction."
@@ -231,7 +271,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             entry, sl, tp1_value, resolved_direction, mt5_symbol
         )
         # If still insane after correction, abort — don't send garbage to MT5
-        if not _is_sane_levels(entry, sl, tp1_value, resolved_direction):
+        if not _is_sane_levels(entry, sl, tp1_value, resolved_direction, mt5_symbol):
             logger.error(
                 f"Correction failed for {pair_display} — SL/TP still insane "
                 f"after correction. Skipping trade."

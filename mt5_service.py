@@ -110,6 +110,23 @@ def open_trade(request: TradeRequest) -> TradeResponse:
                 f"Likely cause: SignalTrade sent SL/TP as pips instead of price levels."
             )
 
+    # Max SL distance safety check
+    max_sl_distances = {
+        "XAUUSD": 30.0,    # Max $30.00 price distance on Gold
+        "BTCUSD": 2500.0,  # Max $2500 price distance on BTC
+        "EURUSD": 0.0080,  # Max 80 pips
+        "USDJPY": 1.20,    # Max 120 pips
+        "AUDUSD": 0.0080,  # Max 80 pips
+        "GBPUSD": 0.0080,  # Max 80 pips
+    }
+    price = tick.ask if request.order_type == "buy" else tick.bid
+    max_dist = max_sl_distances.get(symbol, 50.0)
+    if abs(price - request.sl) > max_dist:
+        raise MT5TradeError(
+            f"Pre-execution safety failed for {symbol}: SL distance ({abs(price - request.sl):.2f}) "
+            f"exceeds maximum allowed safety limit of {max_dist:.2f}."
+        )
+
     action_type = mt5.TRADE_ACTION_DEAL
     order_type = mt5.ORDER_TYPE_BUY if request.order_type == "buy" else mt5.ORDER_TYPE_SELL
     price = tick.ask if request.order_type == "buy" else tick.bid

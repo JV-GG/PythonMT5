@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     max_positions_per_symbol: int = 2
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
-    tp_reduction_pct: float = 0.15         # reduce TP by 15% of entry→TP distance (spread buffer)
+    tp_reduction_pct: float = 0.20         # reduce TP and SL by 20% of entry distance (pull closer)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: int = 60  # seconds between each poll
