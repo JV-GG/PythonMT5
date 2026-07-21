@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     xauusd_weekday_volume: float = 0.10
     xauusd_friday_volume: float = 0.01
 
+    # Daily Profit Target Circuit Breaker
+    daily_profit_target_enabled: bool = True
+    daily_profit_target_usd: float = 50.0   # Stop trading if profit reaches $50 USD
+    daily_profit_target_pct: float = 0.05   # Stop trading if profit reaches 5% of day's start balance
+
     # Logging
     log_file: str = "trading.log"
 

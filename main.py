@@ -21,6 +21,7 @@ from mt5_service import (
     is_margin_safe,
     is_drawdown_safe,
     is_equity_peak_safe,
+    is_daily_profit_target_safe,
     active_trades,
     register_trade,
     unregister_trade,
@@ -233,6 +234,15 @@ async def trade(request: TradeRequest):
             order_id=None,
             executed_price=None,
             message="Trade blocked: daily loss limit reached (50%)",
+        )
+
+    profit_target_ok, _ = is_daily_profit_target_safe()
+    if not profit_target_ok:
+        return TradeResponse(
+            success=False,
+            order_id=None,
+            executed_price=None,
+            message="Trade blocked: daily profit target reached ($50 USD or 5% equity target)",
         )
 
     entry_price = _get_current_price(request.symbol, request.order_type)

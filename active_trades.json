@@ -1,17 +1,4 @@
 {
-    "1626118304": {
-        "order_id": 1626118304,
-        "symbol": "AUDUSD",
-        "direction": "buy",
-        "entry_price": 0.70089,
-        "initial_sl": 0.69973,
-        "initial_tp1": 0.70169,
-        "tp2": 0.70254,
-        "phase": "initial",
-        "current_sl": 0.69973,
-        "current_tp": 0.70169,
-        "triggered_at": 0.0
-    },
     "1626847438": {
         "order_id": 1626847438,
         "symbol": "EURUSD",
@@ -25,17 +12,17 @@
         "current_tp": 1.14135,
         "triggered_at": 0.0
     },
-    "1627234107": {
-        "order_id": 1627234107,
+    "1627552275": {
+        "order_id": 1627552275,
         "symbol": "BTCUSD",
         "direction": "buy",
-        "entry_price": 65757.53,
-        "initial_sl": 65353.303,
-        "initial_tp1": 65825.803,
-        "tp2": 66028.303,
+        "entry_price": 65918.95,
+        "initial_sl": 65650.102,
+        "initial_tp1": 66122.602,
+        "tp2": 66325.102,
         "phase": "initial",
-        "current_sl": 65353.303,
-        "current_tp": 65825.803,
+        "current_sl": 65650.102,
+        "current_tp": 66122.602,
         "triggered_at": 0.0
     }
 }

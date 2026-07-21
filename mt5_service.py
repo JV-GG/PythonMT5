@@ -439,10 +439,10 @@ def should_execute_trade(
 
 _daily_start_balance: float | None = None
 _daily_loss_limit_hit: bool = False
-_last_reset_time: float | None = None
-DAILY_RESET_INTERVAL = 86400.0   # 24 hours in seconds
+_daily_profit_target_hit: bool = False
+_last_reset_date: str | None = None
 
-# Equity peak tracking (resets every 24 hours with daily metrics)
+# Equity peak tracking (resets every trading session with daily metrics)
 _peak_equity: float | None = None
 EQUITY_DRAWDOWN_LIMIT = 0.10     # 10% drop from peak → block trading
 
@@ -466,22 +466,34 @@ def _get_account_info() -> dict | None:
 
 def _reset_daily_metrics() -> None:
     """
-    Snapshot the current balance as the new 24-hour reference point.
-    Clears the drawdown flag so the system can trade again after the window resets.
+    Snapshot the current balance as the reference point for the new trading session.
+    Resets at the start of each local trading day (10:00 AM local time).
     """
-    global _daily_start_balance, _daily_loss_limit_hit, _last_reset_time, _peak_equity
-    now = time.time()
-    if _last_reset_time is None or (now - _last_reset_time) >= DAILY_RESET_INTERVAL:
+    global _daily_start_balance, _daily_loss_limit_hit, _daily_profit_target_hit, _last_reset_date, _peak_equity
+    local_now = datetime.now()
+    today_str = local_now.strftime("%Y-%m-%d")
+
+    settings = get_settings()
+    try:
+        sh, sm = map(int, settings.local_time_start.split(":"))
+    except Exception:
+        sh, sm = 10, 0
+
+    # Check if current local time is at or past the session start time (e.g. 10:00 AM)
+    is_past_start_time = (local_now.hour > sh) or (local_now.hour == sh and local_now.minute >= sm)
+
+    if _last_reset_date is None or (today_str > _last_reset_date and is_past_start_time):
         info = _get_account_info()
         if info is None:
             return
         _daily_start_balance = info["balance"]
         _daily_loss_limit_hit = False
-        _peak_equity = None          # reset equity peak on new session
-        _last_reset_time = now
+        _daily_profit_target_hit = False
+        _peak_equity = None          # reset equity peak watermark for the new session
+        _last_reset_date = today_str
         logger.info(
-            f"Daily metrics reset | balance={_daily_start_balance:.2f} "
-            f"(next reset in {DAILY_RESET_INTERVAL / 3600:.1f}h)"
+            f"Daily metrics reset for {today_str} at {local_now.strftime('%H:%M:%S')} local time | "
+            f"starting_balance={_daily_start_balance:.2f} (resets next trading session at {settings.local_time_start})"
         )
 
 
@@ -523,16 +535,11 @@ def is_margin_safe(margin_threshold: float = 0.40) -> tuple[bool, dict | None]:
 
 def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | None]:
     """
-    Block new trades if the rolling 24-hour session loss reaches the threshold.
-
-    loss_percent = (daily_start_balance - current_balance) / daily_start_balance
-    If loss_percent >= threshold → trading paused for the rest of the window.
-
-    Returns:
-        (True, None)           → trading is safe
-        (False, loss_percent)  → drawdown limit hit
+    Block new trades if the session loss reaches the threshold.
+    Resets at the start of each local trading day (10:00 AM local time).
     """
     global _daily_loss_limit_hit
+    settings = get_settings()
     _reset_daily_metrics()
 
     if _daily_start_balance is None or _daily_start_balance <= 0:
@@ -548,10 +555,8 @@ def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | No
     loss_percent = loss / _daily_start_balance
 
     if _daily_loss_limit_hit:
-        remaining = DAILY_RESET_INTERVAL - (time.time() - _last_reset_time) if _last_reset_time is not None else DAILY_RESET_INTERVAL
         logger.warning(
-            f"Daily loss limit already hit | "
-            f"(will reset in {remaining:.0f}s)"
+            f"Daily loss limit hit | trading paused until next session start at {settings.local_time_start} local time"
         )
         return False, loss_percent
 
@@ -622,6 +627,71 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
         f"peak={_peak_equity:.2f} current={current_equity:.2f} "
         f"drawdown={drawdown:.2%}"
     )
+    return True, info
+
+
+def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
+    """
+    Check if the daily profit target ($50 USD or 5% of day's starting balance)
+    has been reached. Whichever target is reached first pauses trading for the remainder
+    of the day, until 10:00 AM local time the next day.
+
+    Returns:
+        (True,  info_dict)  → trading is allowed
+        (False, info_dict)  → daily profit target reached, trading paused
+    """
+    global _daily_profit_target_hit
+    settings = get_settings()
+    if not settings.daily_profit_target_enabled:
+        return True, None
+
+    _reset_daily_metrics()
+
+    if _daily_start_balance is None or _daily_start_balance <= 0:
+        return True, None
+
+    info = _get_account_info()
+    if info is None:
+        return False, None
+
+    current_equity = info["equity"]
+    profit_usd = current_equity - _daily_start_balance
+    profit_pct = profit_usd / _daily_start_balance
+
+    if _daily_profit_target_hit:
+        logger.warning(
+            f"Daily profit target hit | trading paused until next session start at {settings.local_time_start} local time"
+        )
+        return False, info
+
+    target_usd = settings.daily_profit_target_usd
+    target_pct = settings.daily_profit_target_pct
+
+    hit_usd = profit_usd >= target_usd
+    hit_pct = profit_pct >= target_pct
+
+    if hit_usd or hit_pct:
+        _daily_profit_target_hit = True
+        if hit_usd and hit_pct:
+            target_desc = f"both ${target_usd:.2f} USD and {target_pct:.1%} equity targets"
+        elif hit_usd:
+            target_desc = f"${target_usd:.2f} USD target"
+        else:
+            target_desc = f"{target_pct:.1%} equity target"
+
+        logger.warning(
+            f"Daily profit target reached ({target_desc}) | profit=${profit_usd:.2f} ({profit_pct:.2%}) "
+            f"daily_start=${_daily_start_balance:.2f} current_equity=${current_equity:.2f} | "
+            f"Trading paused until next session start at {settings.local_time_start} local time."
+        )
+        return False, info
+
+    if profit_usd > 0:
+        logger.info(
+            f"Daily profit check passed | profit=${profit_usd:.2f} ({profit_pct:.2%}) "
+            f"targets: ${target_usd:.2f} USD / {target_pct:.1%}"
+        )
+
     return True, info
 
 
