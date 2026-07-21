@@ -3,7 +3,7 @@ MetaTrader 5 service layer.
 Handles MT5 connection, trade execution, spacing checks, and risk management.
 """
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time as dt_time
 
 import MetaTrader5 as mt5
 import logging
@@ -630,11 +630,42 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
     return True, info
 
 
+def _get_closed_profit_today() -> float:
+    """
+    Sum realized profit, commission, and swap of all closed trades
+    from MT5 history deals for the current trading session (since 10:00 AM local time).
+    """
+    local_now = datetime.now()
+    settings = get_settings()
+    try:
+        sh, sm = map(int, settings.local_time_start.split(":"))
+    except Exception:
+        sh, sm = 10, 0
+
+    today_date = local_now.date()
+    if local_now.time() < dt_time(sh, sm):
+        session_start = datetime.combine(today_date - timedelta(days=1), dt_time(sh, sm))
+    else:
+        session_start = datetime.combine(today_date, dt_time(sh, sm))
+
+    deals = mt5.history_deals_get(session_start, local_now)
+    if not deals:
+        return 0.0
+
+    closed_profit = 0.0
+    for d in deals:
+        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+            closed_profit += (d.profit + getattr(d, "commission", 0.0) + getattr(d, "swap", 0.0))
+
+    return round(closed_profit, 2)
+
+
 def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
     """
     Check if the daily profit target ($50 USD or 5% of day's starting balance)
-    has been reached. Whichever target is reached first pauses trading for the remainder
-    of the day, until 10:00 AM local time the next day.
+    has been reached based on MT5 closed trades history.
+    Whichever target is reached first pauses trading for the remainder of the day,
+    until 10:00 AM local time the next day.
 
     Returns:
         (True,  info_dict)  → trading is allowed
@@ -654,8 +685,7 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
     if info is None:
         return False, None
 
-    current_equity = info["equity"]
-    profit_usd = current_equity - _daily_start_balance
+    profit_usd = _get_closed_profit_today()
     profit_pct = profit_usd / _daily_start_balance
 
     if _daily_profit_target_hit:
@@ -680,15 +710,15 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
             target_desc = f"{target_pct:.1%} equity target"
 
         logger.warning(
-            f"Daily profit target reached ({target_desc}) | profit=${profit_usd:.2f} ({profit_pct:.2%}) "
-            f"daily_start=${_daily_start_balance:.2f} current_equity=${current_equity:.2f} | "
+            f"Daily closed profit target reached ({target_desc}) | closed_profit=${profit_usd:.2f} ({profit_pct:.2%}) "
+            f"daily_start=${_daily_start_balance:.2f} | "
             f"Trading paused until next session start at {settings.local_time_start} local time."
         )
         return False, info
 
     if profit_usd > 0:
         logger.info(
-            f"Daily profit check passed | profit=${profit_usd:.2f} ({profit_pct:.2%}) "
+            f"Daily profit check passed | closed_profit=${profit_usd:.2f} ({profit_pct:.2%}) "
             f"targets: ${target_usd:.2f} USD / {target_pct:.1%}"
         )
 
