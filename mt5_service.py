@@ -3,7 +3,7 @@ MetaTrader 5 service layer.
 Handles MT5 connection, trade execution, spacing checks, and risk management.
 """
 import time
-from datetime import datetime, timezone, timedelta, time as dt_time
+from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 import logging
@@ -630,42 +630,54 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
     return True, info
 
 
-def _get_closed_profit_today() -> float:
+def _get_today_closed_profit() -> float:
     """
-    Sum realized profit, commission, and swap of all closed trades
-    from MT5 history deals for the current trading session (since 10:00 AM local time).
+    Query MT5 deal history for today's closed trade profit.
+    Sums the profit of all closing deals (DEAL_ENTRY_OUT) since the
+    local trading session start time (e.g. 10:00 AM Malaysia time).
+
+    Calculates the server-to-local time offset dynamically so MT5 deal history
+    queries match the exact local time window.
     """
-    local_now = datetime.now()
     settings = get_settings()
     try:
         sh, sm = map(int, settings.local_time_start.split(":"))
     except Exception:
         sh, sm = 10, 0
 
-    today_date = local_now.date()
-    if local_now.time() < dt_time(sh, sm):
-        session_start = datetime.combine(today_date - timedelta(days=1), dt_time(sh, sm))
-    else:
-        session_start = datetime.combine(today_date, dt_time(sh, sm))
+    local_now = datetime.now()
+    local_session_start = local_now.replace(hour=sh, minute=sm, second=0, microsecond=0)
 
-    deals = mt5.history_deals_get(session_start, local_now)
-    if not deals:
+    # Calculate MT5 server time offset dynamically
+    tick = mt5.symbol_info_tick("EURUSD")
+    if tick and tick.time > 0:
+        server_now = datetime.fromtimestamp(tick.time)
+        time_diff = server_now - local_now
+    else:
+        time_diff = timedelta(0)
+
+    # Map local start and end times to MT5 server time
+    server_session_start = local_session_start + time_diff
+    server_end_time = (local_now + time_diff) + timedelta(hours=1)
+
+    deals = mt5.history_deals_get(server_session_start, server_end_time)
+    if deals is None or len(deals) == 0:
         return 0.0
 
-    closed_profit = 0.0
-    for d in deals:
-        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
-            closed_profit += (d.profit + getattr(d, "commission", 0.0) + getattr(d, "swap", 0.0))
-
+    # DEAL_ENTRY_OUT (1) = closing deals only (excludes entries/deposits/withdrawals)
+    closed_profit = sum(d.profit for d in deals if d.entry == mt5.DEAL_ENTRY_OUT)
     return round(closed_profit, 2)
 
 
 def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
     """
-    Check if the daily profit target ($50 USD or 5% of day's starting balance)
-    has been reached based on MT5 closed trades history.
-    Whichever target is reached first pauses trading for the remainder of the day,
-    until 10:00 AM local time the next day.
+    Check if today's closed trade profit (from MT5 deal history) has reached
+    the daily profit target ($50 USD or 5% of day's starting balance).
+    Whichever target is reached first pauses trading for the remainder
+    of the day, until 10:00 AM local time the next day.
+
+    Uses mt5.history_deals_get() to sum closed P/L — this matches
+    what the MT5 app shows as "Total" closed profit.
 
     Returns:
         (True,  info_dict)  → trading is allowed
@@ -678,15 +690,9 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
 
     _reset_daily_metrics()
 
-    if _daily_start_balance is None or _daily_start_balance <= 0:
-        return True, None
-
     info = _get_account_info()
     if info is None:
         return False, None
-
-    profit_usd = _get_closed_profit_today()
-    profit_pct = profit_usd / _daily_start_balance
 
     if _daily_profit_target_hit:
         logger.warning(
@@ -694,32 +700,40 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
         )
         return False, info
 
+    closed_profit = _get_today_closed_profit()
+
+    # Calculate percentage based on starting balance (if available)
+    if _daily_start_balance is not None and _daily_start_balance > 0:
+        profit_pct = closed_profit / _daily_start_balance
+    else:
+        profit_pct = 0.0
+
     target_usd = settings.daily_profit_target_usd
     target_pct = settings.daily_profit_target_pct
 
-    hit_usd = profit_usd >= target_usd
+    hit_usd = closed_profit >= target_usd
     hit_pct = profit_pct >= target_pct
 
     if hit_usd or hit_pct:
         _daily_profit_target_hit = True
         if hit_usd and hit_pct:
-            target_desc = f"both ${target_usd:.2f} USD and {target_pct:.1%} equity targets"
+            target_desc = f"both {target_usd:.2f} USD and {target_pct:.1%} equity targets"
         elif hit_usd:
-            target_desc = f"${target_usd:.2f} USD target"
+            target_desc = f"{target_usd:.2f} USD target"
         else:
             target_desc = f"{target_pct:.1%} equity target"
 
         logger.warning(
-            f"Daily closed profit target reached ({target_desc}) | closed_profit=${profit_usd:.2f} ({profit_pct:.2%}) "
-            f"daily_start=${_daily_start_balance:.2f} | "
+            f"Daily profit target reached ({target_desc}) | "
+            f"closed_profit={closed_profit:.2f} ({profit_pct:.2%} of start balance) | "
             f"Trading paused until next session start at {settings.local_time_start} local time."
         )
         return False, info
 
-    if profit_usd > 0:
+    if closed_profit > 0:
         logger.info(
-            f"Daily profit check passed | closed_profit=${profit_usd:.2f} ({profit_pct:.2%}) "
-            f"targets: ${target_usd:.2f} USD / {target_pct:.1%}"
+            f"Daily profit check passed | closed_profit={closed_profit:.2f} ({profit_pct:.2%}) "
+            f"targets: {target_usd:.2f} USD / {target_pct:.1%}"
         )
 
     return True, info
