@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
-    signaltrade_poll_interval: int = 60  # seconds between each poll
+    signaltrade_poll_interval: int = 1   # seconds between each poll
 
     # Trade monitor (adaptive SL/TP)
     monitor_poll_interval: int = 2   # seconds between each monitor cycle
@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # XAUUSD Specific Volumes
     xauusd_weekday_volume: float = 0.10
     xauusd_friday_volume: float = 0.01
+
+    # Logging
+    log_file: str = "trading.log"
 
     @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", mode="before")
     @classmethod

@@ -32,11 +32,28 @@ from signal_watcher import start_watcher, stop_watcher, watcher_status
 from trade_monitor import start_monitor, stop_monitor, monitor_status
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+settings = get_settings()
+
+log_formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+file_handler = logging.FileHandler(settings.log_file, encoding="utf-8")
+file_handler.setFormatter(log_formatter)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler],
+)
+
+# Silence verbose HTTP request polling logs from httpx and httpcore
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Thread-safe flag to stop the trade manager loop (deprecated, consolidated into trade_monitor.py)

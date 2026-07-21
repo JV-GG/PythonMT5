@@ -23,6 +23,7 @@ build/
 
 # Logs
 *.log
+trading.log
 logs/
 
 # OS
