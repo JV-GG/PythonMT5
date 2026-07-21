@@ -32,6 +32,20 @@ from signal_watcher import start_watcher, stop_watcher, watcher_status
 from trade_monitor import start_monitor, stop_monitor, monitor_status
 
 
+class FileOnlyLogFilter(logging.Filter):
+    """
+    Filter applied specifically to the FileHandler (trading.log).
+    Excludes verbose HTTP polling logs and reloader messages from the text file,
+    while allowing them to display normally in the terminal.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name in ("httpx", "httpcore", "watchfiles", "watchfiles.main"):
+            return False
+        if "HTTP Request: GET" in record.getMessage():
+            return False
+        return True
+
+
 settings = get_settings()
 
 log_formatter = logging.Formatter(
@@ -41,6 +55,7 @@ log_formatter = logging.Formatter(
 
 file_handler = logging.FileHandler(settings.log_file, encoding="utf-8")
 file_handler.setFormatter(log_formatter)
+file_handler.addFilter(FileOnlyLogFilter())
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
@@ -49,10 +64,6 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[file_handler, console_handler],
 )
-
-# Silence verbose HTTP request polling logs from httpx and httpcore
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -296,4 +307,5 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=True,
+        reload_excludes=["*.log", "*.json", ".git/*"],
     )
