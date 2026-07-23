@@ -31,14 +31,17 @@ class Settings(BaseSettings):
     tp_reduction_pct: float = 0.20         # reduce TP and SL by 20% of entry distance (pull closer)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
-    signaltrade_poll_interval: int = 60  # seconds between each poll
+    signaltrade_poll_interval: float = 1.0   # seconds between each poll
 
     # Trade monitor (adaptive SL/TP)
-    monitor_poll_interval: int = 2   # seconds between each monitor cycle
+    monitor_poll_interval: float = 1.0  # seconds between each monitor cycle
     monitor_tp1_proximity: float = 5.0  # how close price must be to TP1 to trigger Phase 2 (in pips, e.g. 5.0)
 
     # Adaptive SL/TP Customization
-    phase1_trigger_pct: float = 0.75       # threshold percentage of entry-to-TP1 distance to trigger Phase 1
+    early_risk_reduction_enabled: bool = True
+    early_risk_cut_trigger_pct: float = 0.20   # 20% of TP1 move -> cut SL risk by 50%
+    early_breakeven_trigger_pct: float = 0.30  # 30% of TP1 move -> move SL to Breakeven (Entry)
+    phase1_trigger_pct: float = 0.60       # 60% of TP1 move -> trigger Phase 1 lock
     phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
     phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
     trailing_sl_pct: float = 0.20          # trailing SL distance as percentage of entry-to-TP2 total move
@@ -56,6 +59,19 @@ class Settings(BaseSettings):
     # XAUUSD Specific Volumes
     xauusd_weekday_volume: float = 0.01
     xauusd_friday_volume: float = 0.01
+
+    # Daily Profit Target Circuit Breaker
+    daily_profit_target_enabled: bool = True
+    daily_profit_target_usd: float = 50.0   # Stop trading if profit reaches $50 USD
+    daily_profit_target_pct: float = 0.05   # Stop trading if profit reaches 5% of day's start balance
+
+    # Dynamic Daily Drawdown Circuit Breaker
+    daily_drawdown_enabled: bool = True
+    daily_drawdown_pct: float = 0.10        # 10% of day's peak/starting balance
+    daily_drawdown_min_usd: float = 100.0   # $100 USD minimum threshold
+
+    # Logging
+    log_file: str = "trading.log"
 
     @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", mode="before")
     @classmethod
