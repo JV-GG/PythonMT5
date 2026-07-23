@@ -26,6 +26,9 @@ build/
 trading.log
 logs/
 
+# Local State / Runtime Cache
+active_trades.json
+
 # OS
 .DS_Store
 Thumbs.db
