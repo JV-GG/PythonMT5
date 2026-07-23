@@ -533,13 +533,22 @@ def is_margin_safe(margin_threshold: float = 0.40) -> tuple[bool, dict | None]:
     return True, info
 
 
-def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | None]:
+def is_drawdown_safe() -> tuple[bool, float | None]:
     """
-    Block new trades if the session loss reaches the threshold.
-    Resets at the start of each local trading day (10:00 AM local time).
+    Check if daily drawdown limit has been reached.
+    Calculates a dynamic loss limit = max(10% of day's peak/start baseline, $100.00 USD).
+    If total loss from baseline reaches this limit, trading is paused for the remainder
+    of the day, until 10:00 AM local time the next day.
+
+    Returns:
+        (True,  loss_percent) → trading is allowed
+        (False, loss_percent) → daily loss limit reached, trading paused
     """
-    global _daily_loss_limit_hit
+    global _daily_loss_limit_hit, _peak_equity
     settings = get_settings()
+    if not settings.daily_drawdown_enabled:
+        return True, None
+
     _reset_daily_metrics()
 
     if _daily_start_balance is None or _daily_start_balance <= 0:
@@ -550,28 +559,42 @@ def is_drawdown_safe(drawdown_threshold: float = 0.50) -> tuple[bool, float | No
     if info is None:
         return False, None
 
-    current_balance = info["balance"]
-    loss = _daily_start_balance - current_balance
-    loss_percent = loss / _daily_start_balance
+    current_equity = info["equity"]
+
+    # Update peak equity watermark
+    if _peak_equity is None or current_equity > _peak_equity:
+        _peak_equity = current_equity
+
+    # Baseline is the highest between starting balance and peak equity
+    baseline = max(_daily_start_balance, _peak_equity)
+
+    # Dynamic drawdown limit: max(10% of baseline, $100 USD)
+    drawdown_pct = settings.daily_drawdown_pct
+    min_usd = settings.daily_drawdown_min_usd
+    allowed_loss_usd = max(baseline * drawdown_pct, min_usd)
+
+    current_loss_usd = baseline - current_equity
+    loss_percent = current_loss_usd / baseline if baseline > 0 else 0.0
 
     if _daily_loss_limit_hit:
         logger.warning(
-            f"Daily loss limit hit | trading paused until next session start at {settings.local_time_start} local time"
+            f"Daily drawdown limit hit | trading paused until next session start at {settings.local_time_start} local time"
         )
         return False, loss_percent
 
-    if loss_percent >= drawdown_threshold:
+    if current_loss_usd >= allowed_loss_usd:
         _daily_loss_limit_hit = True
         logger.warning(
-            f"Daily loss limit reached | loss={loss:.2f} ({loss_percent:.2%}) "
-            f"daily_start={_daily_start_balance:.2f} current={current_balance:.2f}"
+            f"Daily drawdown limit reached | loss=${current_loss_usd:.2f} (limit=${allowed_loss_usd:.2f}) "
+            f"baseline=${baseline:.2f} current_equity=${current_equity:.2f} | "
+            f"Trading paused until next session start at {settings.local_time_start} local time."
         )
         return False, loss_percent
 
-    if loss > 0:
+    if current_loss_usd > 0:
         logger.info(
-            f"Drawdown check passed | loss={loss:.2f} ({loss_percent:.2%}) "
-            f"daily_start={_daily_start_balance:.2f}"
+            f"Daily drawdown check passed | loss=${current_loss_usd:.2f} (limit=${allowed_loss_usd:.2f}) "
+            f"baseline=${baseline:.2f}"
         )
 
     return True, None
