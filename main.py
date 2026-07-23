@@ -21,6 +21,7 @@ from mt5_service import (
     is_margin_safe,
     is_drawdown_safe,
     is_equity_peak_safe,
+    is_daily_profit_target_safe,
     active_trades,
     register_trade,
     unregister_trade,
@@ -32,11 +33,39 @@ from signal_watcher import start_watcher, stop_watcher, watcher_status
 from trade_monitor import start_monitor, stop_monitor, monitor_status
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+class FileOnlyLogFilter(logging.Filter):
+    """
+    Filter applied specifically to the FileHandler (trading.log).
+    Excludes verbose HTTP polling logs and reloader messages from the text file,
+    while allowing them to display normally in the terminal.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name in ("httpx", "httpcore", "watchfiles", "watchfiles.main"):
+            return False
+        if "HTTP Request: GET" in record.getMessage():
+            return False
+        return True
+
+
+settings = get_settings()
+
+log_formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+file_handler = logging.FileHandler(settings.log_file, encoding="utf-8")
+file_handler.setFormatter(log_formatter)
+file_handler.addFilter(FileOnlyLogFilter())
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler],
+)
+
 logger = logging.getLogger(__name__)
 
 # Thread-safe flag to stop the trade manager loop (deprecated, consolidated into trade_monitor.py)
@@ -207,6 +236,15 @@ async def trade(request: TradeRequest):
             message="Trade blocked: daily loss limit reached (50%)",
         )
 
+    profit_target_ok, _ = is_daily_profit_target_safe()
+    if not profit_target_ok:
+        return TradeResponse(
+            success=False,
+            order_id=None,
+            executed_price=None,
+            message="Trade blocked: daily profit target reached ($50 USD or 5% equity target)",
+        )
+
     entry_price = _get_current_price(request.symbol, request.order_type)
     if entry_price is None:
         raise HTTPException(
@@ -279,4 +317,5 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=True,
+        reload_excludes=["*.log", "*.json", ".git/*"],
     )

@@ -23,9 +23,10 @@ build/
 
 # Logs
 *.log
+trading.log
 logs/
 
-# Local Runtime Data
+# Local State / Runtime Cache
 active_trades.json
 
 # OS

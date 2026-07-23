@@ -18,6 +18,7 @@ from mt5_service import (
     should_execute_trade,
     is_margin_safe,
     is_drawdown_safe,
+    is_daily_profit_target_safe,
     active_trades,
     register_trade,
     MT5ConnectionError,
@@ -467,6 +468,13 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if not is_drawdown_safe()[0]:
             logger.warning(
                 f"Trade blocked (drawdown) for {pair_display} | "
+                f"direction={trade_req.order_type}"
+            )
+            return
+
+        if not is_daily_profit_target_safe()[0]:
+            logger.warning(
+                f"Trade blocked (daily profit target reached) for {pair_display} | "
                 f"direction={trade_req.order_type}"
             )
             return
