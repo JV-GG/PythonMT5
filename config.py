@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """
 Application configuration.
 All sensitive credentials and tunable parameters are centralized here.
@@ -28,7 +29,7 @@ class Settings(BaseSettings):
     max_positions_per_symbol: int = 2
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
-    tp_reduction_pct: float = 0.20         # reduce TP and SL by 20% of entry distance (pull closer)
+    tp_reduction_pct: float = 0.20         # reduce TP and SL by 20% of entry distance (spread buffer for live)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
@@ -41,6 +42,10 @@ class Settings(BaseSettings):
     early_risk_reduction_enabled: bool = True
     early_risk_cut_trigger_pct: float = 0.20   # 20% of TP1 move -> cut SL risk by 50%
     early_breakeven_trigger_pct: float = 0.30  # 30% of TP1 move -> move SL to Breakeven (Entry)
+    early_step_40_trigger_pct: float = 0.40    # 40% of TP1 move -> lock 5% of TP1 profit
+    early_step_40_lock_pct: float = 0.05       # lock 5% of TP1 profit distance
+    early_step_50_trigger_pct: float = 0.50    # 50% of TP1 move -> lock 10% of TP1 profit
+    early_step_50_lock_pct: float = 0.10       # lock 10% of TP1 profit distance
     phase1_trigger_pct: float = 0.60       # 60% of TP1 move -> trigger Phase 1 lock
     phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
     phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
@@ -57,7 +62,7 @@ class Settings(BaseSettings):
     local_time_end: str = "20:00"
 
     # XAUUSD Specific Volumes
-    xauusd_weekday_volume: float = 0.01
+    xauusd_weekday_volume: float = 0.10
     xauusd_friday_volume: float = 0.01
 
     # Daily Profit Target Circuit Breaker
