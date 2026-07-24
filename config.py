@@ -1,13 +1,13 @@
-<<<<<<< HEAD
+# Application configuration.
 """
-Application configuration.
+Configuration settings for the trading bot.
 All sensitive credentials and tunable parameters are centralized here.
 """
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Any
-
 
 class Settings(BaseSettings):
     # MT5 Connection
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     early_step_40_trigger_pct: float = 0.40    # 40% of TP1 move -> lock 5% of TP1 profit
     early_step_40_lock_pct: float = 0.05       # lock 5% of TP1 profit distance
     early_step_50_trigger_pct: float = 0.50    # 50% of TP1 move -> lock 10% of TP1 profit
-    early_step_50_lock_pct: float = 0.10       # lock 10% of TP1 profit distance
+    early_step_50_lock_pct: float = 0.10       # lock 10% of TP1 profit
     phase1_trigger_pct: float = 0.60       # 60% of TP1 move -> trigger Phase 1 lock
     phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
     phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
@@ -93,7 +93,6 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
-
 
 @lru_cache
 def get_settings() -> Settings:
