@@ -624,6 +624,7 @@ from mt5_service import (
     is_margin_safe,
     is_drawdown_safe,
     is_daily_profit_target_safe,
+    is_tp_distance_safe,
     active_trades,
     register_trade,
     MT5ConnectionError,
@@ -908,20 +909,6 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
                 f"{pair_display} original_tp_final={original_tp_final:.5f} → adjusted_tp_final={tp_final_value:.5f}"
             )
 
-    # ── Minimum Risk:Reward Ratio (RRR) Guard ──────────────────────────────
-    tp1_dist = abs(tp1_value - entry)
-    tp_final_dist = abs(tp_final_value - entry) if tp_final_value is not None else tp1_dist
-    best_reward_dist = max(tp1_dist, tp_final_dist)
-    risk_dist = abs(entry - sl)
-    rrr = round(best_reward_dist / risk_dist, 3) if risk_dist > 0 else 0.0
-
-    if settings.min_rrr > 0 and rrr < settings.min_rrr:
-        logger.warning(
-            f"Trade skipped for {pair_display}: Bad Risk:Reward Ratio ({rrr:.2f}) is below minimum allowed RRR ({settings.min_rrr:.2f}). "
-            f"Best TP distance={best_reward_dist:.5f}, SL distance={risk_dist:.5f}"
-        )
-        return None
-
     return TradeRequest(
         symbol=mt5_symbol,
         volume=volume,
@@ -1054,6 +1041,21 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"direction={trade_req.order_type}"
             )
             return
+
+        # Minimum Remaining TP Distance filter (Risk:Reward Guard)
+        tp1_target = trade_req.tp1 or trade_req.tp
+        if signal_entry is not None and tp1_target is not None:
+            if not is_tp_distance_safe(
+                symbol=trade_req.symbol,
+                direction=trade_req.order_type,
+                signal_entry=float(signal_entry),
+                signal_tp1=float(tp1_target),
+            )[0]:
+                logger.warning(
+                    f"Trade blocked (Insufficient TP distance) for {pair_display} | "
+                    f"direction={trade_req.order_type}"
+                )
+                return
 
         # Spacing filter
         if signal_entry is not None:
