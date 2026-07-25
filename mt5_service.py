@@ -771,10 +771,9 @@ def is_tp_distance_safe(
 ) -> tuple[bool, float | None]:
     """
     Check if the remaining TP1 distance from current market price is at least
-    `min_remaining_tp_pct` (default 70%) of the signal's original TP1 distance.
+    `min_remaining_tp_pct` (default 70%) of the ADJUSTED TP1 distance (after 20% buffer reduction).
 
-    Prevents entering trades where market price has already moved close to TP1,
-    which results in bad Risk:Reward ratios (e.g. risking $3.91 to win $0.29).
+    Calculated after spread buffer reduction on the adjusted TP1.
 
     Returns:
         (True, remaining_ratio)  → TP distance is sufficient, trade allowed
@@ -804,15 +803,15 @@ def is_tp_distance_safe(
     if remaining_ratio < min_pct:
         logger.warning(
             f"Trade blocked (Insufficient TP1 distance) for {symbol} {direction.upper()} | "
-            f"Only {remaining_ratio:.1%} of TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
-            f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, TP1={signal_tp1:.5f}"
+            f"Only {remaining_ratio:.1%} of adjusted TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
+            f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, Adjusted TP1={signal_tp1:.5f}"
         )
         return False, remaining_ratio
 
     logger.info(
         f"TP1 distance check passed for {symbol} {direction.upper()} | "
-        f"{remaining_ratio:.1%} of TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
-        f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, TP1={signal_tp1:.5f}"
+        f"{remaining_ratio:.1%} of adjusted TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
+        f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, Adjusted TP1={signal_tp1:.5f}"
     )
     return True, remaining_ratio
 

@@ -2,11 +2,11 @@
 Application configuration.
 All sensitive credentials and tunable parameters are centralized here.
 """
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Any
-
 
 class Settings(BaseSettings):
     # MT5 Connection
@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     max_positions_per_symbol: int = 2
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
-    tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
+    tp_reduction_pct: float = 0.20         # reduce TP and SL by 20% of entry distance (spread buffer for live)
+    min_rrr: float = 0.0                  # set to 0.0 to rely on 70% remaining TP distance guard instead of fixed RRR
+
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
@@ -74,7 +76,7 @@ class Settings(BaseSettings):
     daily_drawdown_pct: float = 0.10        # 10% of day's peak/starting balance
     daily_drawdown_min_usd: float = 100.0   # $100 USD minimum threshold
 
-    # Minimum Remaining TP Distance Filter (Risk:Reward Guard)
+    # Minimum Remaining TP Distance Filter (70% Remaining Guard)
     min_remaining_tp_enabled: bool = True
     min_remaining_tp_pct: float = 0.70      # Require at least 70% of TP1 distance remaining from current price
 
