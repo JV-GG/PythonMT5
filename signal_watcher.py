@@ -247,11 +247,17 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         malaysia_now = datetime.now(malaysia_tz)
         weekday = malaysia_now.weekday()
         if weekday == 4:  # Friday
-            volume = settings.xauusd_friday_volume
+            logger.warning(
+                f"Trade blocked (Friday Gold restriction): Trading XAUUSD is disabled on Fridays (Malaysia Time)."
+            )
+            return None
         elif weekday in (0, 1, 2, 3):  # Monday - Thursday
             volume = settings.xauusd_weekday_volume
-        else:  # Weekend fallback
-            volume = settings.xauusd_friday_volume
+        else:  # Weekend
+            logger.warning(
+                f"Trade blocked (Weekend Gold restriction): Trading XAUUSD is disabled on weekends (Malaysia Time)."
+            )
+            return None
 
     # ── SL/TP reduction (spread buffer) ──────────────────────────────────
     # Pull SL and TP closer to entry by reduction_pct of the entry→level
