@@ -303,6 +303,18 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
                 f"{pair_display} original_tp_final={original_tp_final:.5f} → adjusted_tp_final={tp_final_value:.5f}"
             )
 
+    # ── Minimum Risk:Reward Ratio (RRR) Guard ──────────────────────────────
+    reward_dist = abs(tp1_value - entry)
+    risk_dist = abs(entry - sl)
+    rrr = round(reward_dist / risk_dist, 3) if risk_dist > 0 else 0.0
+
+    if settings.min_rrr > 0 and rrr < settings.min_rrr:
+        logger.warning(
+            f"Trade skipped for {pair_display}: Bad Risk:Reward Ratio ({rrr:.2f}) is below minimum allowed RRR ({settings.min_rrr:.2f}). "
+            f"TP1 distance={reward_dist:.5f}, SL distance={risk_dist:.5f}"
+        )
+        return None
+
     return TradeRequest(
         symbol=mt5_symbol,
         volume=volume,

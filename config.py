@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
     tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
+    min_rrr: float = 1.0                  # minimum Risk:Reward Ratio required to take a trade (e.g. 1.0 = TP distance >= SL distance)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
