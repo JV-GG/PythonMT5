@@ -242,7 +242,10 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
     volume = settings.default_volume
     if mt5_symbol == "XAUUSD":
-        weekday = datetime.now().weekday()
+        from datetime import timezone as dt_timezone, timedelta as dt_timedelta
+        malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+        malaysia_now = datetime.now(malaysia_tz)
+        weekday = malaysia_now.weekday()
         if weekday == 4:  # Friday
             volume = settings.xauusd_friday_volume
         elif weekday in (0, 1, 2, 3):  # Monday - Thursday
