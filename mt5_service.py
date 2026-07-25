@@ -762,6 +762,61 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
     return True, info
 
 
+def is_tp_distance_safe(
+    symbol: str,
+    direction: str,
+    signal_entry: float,
+    signal_tp1: float,
+    current_price: float | None = None,
+) -> tuple[bool, float | None]:
+    """
+    Check if the remaining TP1 distance from current market price is at least
+    `min_remaining_tp_pct` (default 70%) of the signal's original TP1 distance.
+
+    Prevents entering trades where market price has already moved close to TP1,
+    which results in bad Risk:Reward ratios (e.g. risking $3.91 to win $0.29).
+
+    Returns:
+        (True, remaining_ratio)  → TP distance is sufficient, trade allowed
+        (False, remaining_ratio) → TP distance too small, trade blocked
+    """
+    settings = get_settings()
+    if not settings.min_remaining_tp_enabled:
+        return True, None
+
+    total_tp1_dist = abs(signal_tp1 - signal_entry)
+    if total_tp1_dist <= 0:
+        return True, None
+
+    if current_price is None:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            logger.warning(f"Could not fetch tick for {symbol} to check TP distance")
+            return False, None
+        current_price = tick.ask if direction.lower() == "buy" else tick.bid
+
+    is_buy = direction.lower() == "buy"
+    remaining_dist = (signal_tp1 - current_price) if is_buy else (current_price - signal_tp1)
+    remaining_ratio = remaining_dist / total_tp1_dist
+
+    min_pct = settings.min_remaining_tp_pct
+
+    if remaining_ratio < min_pct:
+        logger.warning(
+            f"Trade blocked (Insufficient TP1 distance) for {symbol} {direction.upper()} | "
+            f"Only {remaining_ratio:.1%} of TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
+            f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, TP1={signal_tp1:.5f}"
+        )
+        return False, remaining_ratio
+
+    logger.info(
+        f"TP1 distance check passed for {symbol} {direction.upper()} | "
+        f"{remaining_ratio:.1%} of TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
+        f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, TP1={signal_tp1:.5f}"
+    )
+    return True, remaining_ratio
+
+
 # ── Trade registry ──────────────────────────────────────────────────────────────
 # Single source of truth for all open trade metadata used by the adaptive SL/TP
 # managers (async monitor in trade_monitor.py).

@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
     tp_reduction_pct: float = 0.10         # reduce TP by 10% of entry→TP distance (spread buffer)
-    min_rrr: float = 0.50                  # minimum Risk:Reward Ratio required (e.g. 0.50 allows 0.60 TP1 / 1.20 TP2 signals while blocking 0.07 absurd trades)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
@@ -74,6 +73,10 @@ class Settings(BaseSettings):
     daily_drawdown_enabled: bool = True
     daily_drawdown_pct: float = 0.10        # 10% of day's peak/starting balance
     daily_drawdown_min_usd: float = 100.0   # $100 USD minimum threshold
+
+    # Minimum Remaining TP Distance Filter (Risk:Reward Guard)
+    min_remaining_tp_enabled: bool = True
+    min_remaining_tp_pct: float = 0.70      # Require at least 70% of TP1 distance remaining from current price
 
     # Logging
     log_file: str = "trading.log"
