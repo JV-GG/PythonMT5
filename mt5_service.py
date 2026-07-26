@@ -148,15 +148,12 @@ def open_trade(request: TradeRequest) -> TradeResponse:
             f"Trade failed. Retcode={result.retcode} ({result.comment})"
         )
 
-    logger.info(
-        f"Trade executed | order_id={result.order} price={result.price} "
-        f"volume={result.volume} retcode={result.retcode}"
-    )
+    exec_price = result.price if (result.price is not None and result.price > 0) else price
 
     return TradeResponse(
         success=True,
         order_id=result.order,
-        executed_price=result.price,
+        executed_price=exec_price,
         message=f"Order {result.order} executed successfully.",
     )
 
@@ -315,11 +312,12 @@ def should_execute_trade(
     """
     settings = get_settings()
 
-    # Local time restrictions check
+    # Local time restrictions check (Enforced strictly in Malaysia Time UTC+8)
     if settings.local_time_restriction_enabled:
-        from datetime import time as dt_time
-        local_now = datetime.now()
-        current_time = local_now.time()
+        from datetime import time as dt_time, timezone as dt_timezone, timedelta as dt_timedelta
+        malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+        malaysia_now = datetime.now(malaysia_tz)
+        current_time = malaysia_now.time()
 
         try:
             sh, sm = map(int, settings.local_time_start.split(":"))
@@ -337,13 +335,13 @@ def should_execute_trade(
 
         if not allowed:
             logger.warning(
-                f"Trade blocked (local time restrictions): Current local time {local_now.strftime('%H:%M:%S')} "
+                f"Trade blocked (local time restrictions): Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
                 f"is outside the allowed window {settings.local_time_start} - {settings.local_time_end}."
             )
             return False
 
         logger.info(
-            f"Local time check passed: Current local time {local_now.strftime('%H:%M:%S')} "
+            f"Local time check passed: Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
             f"is within the allowed window {settings.local_time_start} - {settings.local_time_end}."
         )
 
