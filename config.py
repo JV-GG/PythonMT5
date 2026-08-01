@@ -40,11 +40,14 @@ class Settings(BaseSettings):
     # Adaptive SL/TP Customization
     early_risk_reduction_enabled: bool = True
     early_risk_cut_trigger_pct: float = 0.20   # 20% of TP1 move -> cut SL risk by 50%
-    early_breakeven_trigger_pct: float = 0.30  # 30% of TP1 move -> move SL to Breakeven (Entry)
-    early_step_40_trigger_pct: float = 0.40    # 40% of TP1 move -> lock 5% of TP1 profit
-    early_step_40_lock_pct: float = 0.05       # lock 5% of TP1 profit distance
-    early_step_50_trigger_pct: float = 0.50    # 50% of TP1 move -> lock 10% of TP1 profit
-    early_step_50_lock_pct: float = 0.10       # lock 10% of TP1 profit distance
+    early_step_25_trigger_pct: float = 0.25    # 25% of TP1 move -> lock 2% of TP1 profit
+    early_step_25_lock_pct: float = 0.02       # lock 2% of TP1 profit distance
+    early_step_30_trigger_pct: float = 0.30    # 30% of TP1 move -> lock 5% of TP1 profit
+    early_step_30_lock_pct: float = 0.05       # lock 5% of TP1 profit distance
+    early_step_40_trigger_pct: float = 0.40    # 40% of TP1 move -> lock 10% of TP1 profit
+    early_step_40_lock_pct: float = 0.10       # lock 10% of TP1 profit distance
+    early_step_50_trigger_pct: float = 0.50    # 50% of TP1 move -> lock 25% of TP1 profit
+    early_step_50_lock_pct: float = 0.25       # lock 25% of TP1 profit distance
     phase1_trigger_pct: float = 0.60       # 60% of TP1 move -> trigger Phase 1 lock
     phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
     phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
