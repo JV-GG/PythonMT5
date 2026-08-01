@@ -340,7 +340,7 @@ def should_execute_trade(
             )
             return False
 
-        logger.info(
+        logger.debug(
             f"Local time check passed: Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
             f"is within the allowed window {settings.local_time_start} - {settings.local_time_end}."
         )
@@ -526,7 +526,7 @@ def is_margin_safe(margin_threshold: float = 0.40) -> tuple[bool, dict | None]:
         )
         return False, info
 
-    logger.info(
+    logger.debug(
         f"Margin check passed | usage={margin_usage:.2%} threshold={margin_threshold:.2%} "
         f"margin={info['margin']:.2f} free_margin={info['free_margin']:.2f}"
     )
@@ -945,7 +945,7 @@ def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | N
         "sl": new_sl,
         "tp": new_tp if new_tp is not None else 0.0,
     }
-    logger.info(
+    logger.debug(
         f"Modifying position {position_ticket} | sl={new_sl} tp={new_tp}"
     )
     result = mt5.order_send(request)
@@ -953,9 +953,12 @@ def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | N
         logger.error(f"Modify returned None. Error: {mt5.last_error()}")
         return {}
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logger.warning(
-            f"Modify failed retcode={result.retcode} comment={result.comment}"
-        )
+        if result.retcode == 10016:
+            logger.debug(f"Modify failed retcode={result.retcode} (Invalid stops)")
+        else:
+            logger.warning(
+                f"Modify failed retcode={result.retcode} comment={result.comment}"
+            )
     else:
         logger.info(
             f"Position {position_ticket} modified successfully | sl={new_sl} tp={new_tp}"

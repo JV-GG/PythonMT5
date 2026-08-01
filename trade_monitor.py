@@ -323,7 +323,7 @@ def _process_one_position(pos: dict) -> None:
                 if _modify_position(ticket, new_sl, current_tp):
                     trade.current_sl = new_sl
                     save_active_trades()
-                    logger.info(f"[{ticket}] PHASE_PARTIAL_LOCK trailing SL updated | new_sl={new_sl:.5f} price={price:.5f}")
+                    logger.debug(f"[{ticket}] PHASE_PARTIAL_LOCK trailing SL updated | new_sl={new_sl:.5f} price={price:.5f}")
 
     elif phase == PHASE_TP1_HIT:
         # Trail SL: trail at settings.trailing_sl_pct of entry-to-TP2 total move distance
@@ -365,10 +365,10 @@ def _process_one_position(pos: dict) -> None:
                 return
 
             if not _is_valid_sl(symbol, direction, final_sl):
-                logger.warning(f"[{ticket}] Trailing SL {final_sl:.5f} is invalid at price {price:.5f}")
+                logger.debug(f"[{ticket}] Trailing SL {final_sl:.5f} is invalid at price {price:.5f}")
                 return
             if not _is_valid_tp(symbol, direction, final_tp):
-                logger.warning(f"[{ticket}] Trailing TP {final_tp:.5f} is invalid at price {price:.5f}")
+                logger.debug(f"[{ticket}] Trailing TP {final_tp:.5f} is invalid at price {price:.5f}")
                 return
 
             if _modify_position(ticket, final_sl, final_tp):
@@ -395,10 +395,13 @@ def _modify_position(ticket: int, new_sl: float, new_tp: float) -> bool:
         logger.warning(f"order_send returned None for ticket {ticket}")
         return False
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logger.warning(
-            f"Modify position {ticket} failed — "
-            f"retcode={result.retcode} ({result.comment})"
-        )
+        if result.retcode == 10016:
+            logger.debug(f"Modify position {ticket} failed — retcode={result.retcode} ({result.comment})")
+        else:
+            logger.warning(
+                f"Modify position {ticket} failed — "
+                f"retcode={result.retcode} ({result.comment})"
+            )
         return False
     return True
 
