@@ -453,7 +453,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 symbol=trade_req.symbol,
                 direction=trade_req.order_type,
                 signal_entry=float(signal_entry),
-                signal_tp1=float(tp1_target),
+                signal_tp1=tp1_target,
             )[0]:
                 logger.warning(
                     f"Trade blocked (Insufficient TP distance) for {pair_display} | "
