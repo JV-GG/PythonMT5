@@ -201,7 +201,7 @@ def _process_one_position(pos: dict) -> None:
                 logger.info(f"[{ticket}] Phase 1 lock SL moved (+50% TP1 distance) | locked_sl={locked_sl:.5f} price={price:.5f}")
 
         elif settings.early_risk_reduction_enabled:
-            # 2. Check 50% trigger (Lock 10% TP1 profit)
+            # 2. Check 50% trigger (Lock 25% TP1 profit)
             threshold_50 = round((entry + move_to_tp1 * settings.early_step_50_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_50_trigger_pct), 6)
             triggered_50 = (price >= threshold_50) if is_buy else (price <= threshold_50)
 
@@ -212,10 +212,10 @@ def _process_one_position(pos: dict) -> None:
                     if _modify_position(ticket, lock_50_sl, current_tp):
                         trade.current_sl = lock_50_sl
                         save_active_trades()
-                        logger.info(f"[{ticket}] Early 50% TP1 move | SL locked at +10% profit ({lock_50_sl:.5f}) at price {price:.5f}")
+                        logger.info(f"[{ticket}] Early 50% TP1 move | SL locked at +25% profit ({lock_50_sl:.5f}) at price {price:.5f}")
 
             else:
-                # 3. Check 40% trigger (Lock 5% TP1 profit)
+                # 3. Check 40% trigger (Lock 10% TP1 profit)
                 threshold_40 = round((entry + move_to_tp1 * settings.early_step_40_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_40_trigger_pct), 6)
                 triggered_40 = (price >= threshold_40) if is_buy else (price <= threshold_40)
 
@@ -226,36 +226,50 @@ def _process_one_position(pos: dict) -> None:
                         if _modify_position(ticket, lock_40_sl, current_tp):
                             trade.current_sl = lock_40_sl
                             save_active_trades()
-                            logger.info(f"[{ticket}] Early 40% TP1 move | SL locked at +5% profit ({lock_40_sl:.5f}) at price {price:.5f}")
+                            logger.info(f"[{ticket}] Early 40% TP1 move | SL locked at +10% profit ({lock_40_sl:.5f}) at price {price:.5f}")
 
                 else:
-                    # 4. Check 30% trigger (Move SL to Breakeven / Entry)
-                    threshold_30 = round((entry + move_to_tp1 * settings.early_breakeven_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_breakeven_trigger_pct), 6)
+                    # 4. Check 30% trigger (Lock 5% TP1 profit)
+                    threshold_30 = round((entry + move_to_tp1 * settings.early_step_30_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_30_trigger_pct), 6)
                     triggered_30 = (price >= threshold_30) if is_buy else (price <= threshold_30)
 
                     if triggered_30:
-                        be_sl = entry
-                        sl_better = (current_sl == 0.0) or (be_sl > current_sl if is_buy else be_sl < current_sl)
-                        if sl_better and _is_valid_sl(symbol, direction, be_sl):
-                            if _modify_position(ticket, be_sl, current_tp):
-                                trade.current_sl = be_sl
+                        lock_30_sl = (entry + move_to_tp1 * settings.early_step_30_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_30_lock_pct)
+                        sl_better = (current_sl == 0.0) or (lock_30_sl > current_sl if is_buy else lock_30_sl < current_sl)
+                        if sl_better and _is_valid_sl(symbol, direction, lock_30_sl):
+                            if _modify_position(ticket, lock_30_sl, current_tp):
+                                trade.current_sl = lock_30_sl
                                 save_active_trades()
-                                logger.info(f"[{ticket}] Early breakeven (30% TP1 move) | SL moved to Entry {be_sl:.5f} at price {price:.5f}")
+                                logger.info(f"[{ticket}] Early 30% TP1 move | SL locked at +5% profit ({lock_30_sl:.5f}) at price {price:.5f}")
 
                     else:
-                        # 5. Check 20% trigger (Cut SL risk by 50%)
-                        threshold_20 = round((entry + move_to_tp1 * settings.early_risk_cut_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_risk_cut_trigger_pct), 6)
-                        triggered_20 = (price >= threshold_20) if is_buy else (price <= threshold_20)
+                        # 5. Check 25% trigger (Lock 2% TP1 profit)
+                        threshold_25 = round((entry + move_to_tp1 * settings.early_step_25_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_25_trigger_pct), 6)
+                        triggered_25 = (price >= threshold_25) if is_buy else (price <= threshold_25)
 
-                        if triggered_20 and trade.initial_sl > 0:
-                            initial_risk = abs(entry - trade.initial_sl)
-                            risk_cut_sl = (entry - initial_risk * 0.50) if is_buy else (entry + initial_risk * 0.50)
-                            sl_better = (current_sl == 0.0) or (risk_cut_sl > current_sl if is_buy else risk_cut_sl < current_sl)
-                            if sl_better and _is_valid_sl(symbol, direction, risk_cut_sl):
-                                if _modify_position(ticket, risk_cut_sl, current_tp):
-                                    trade.current_sl = risk_cut_sl
+                        if triggered_25:
+                            lock_25_sl = (entry + move_to_tp1 * settings.early_step_25_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_25_lock_pct)
+                            sl_better = (current_sl == 0.0) or (lock_25_sl > current_sl if is_buy else lock_25_sl < current_sl)
+                            if sl_better and _is_valid_sl(symbol, direction, lock_25_sl):
+                                if _modify_position(ticket, lock_25_sl, current_tp):
+                                    trade.current_sl = lock_25_sl
                                     save_active_trades()
-                                    logger.info(f"[{ticket}] Early risk reduction (20% TP1 move) | SL cut 50% closer to Entry {risk_cut_sl:.5f} at price {price:.5f}")
+                                    logger.info(f"[{ticket}] Early 25% TP1 move | SL locked at +2% profit ({lock_25_sl:.5f}) at price {price:.5f}")
+
+                        else:
+                            # 6. Check 20% trigger (Cut SL risk by 50%)
+                            threshold_20 = round((entry + move_to_tp1 * settings.early_risk_cut_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.early_risk_cut_trigger_pct), 6)
+                            triggered_20 = (price >= threshold_20) if is_buy else (price <= threshold_20)
+
+                            if triggered_20 and trade.initial_sl > 0:
+                                initial_risk = abs(entry - trade.initial_sl)
+                                risk_cut_sl = (entry - initial_risk * 0.50) if is_buy else (entry + initial_risk * 0.50)
+                                sl_better = (current_sl == 0.0) or (risk_cut_sl > current_sl if is_buy else risk_cut_sl < current_sl)
+                                if sl_better and _is_valid_sl(symbol, direction, risk_cut_sl):
+                                    if _modify_position(ticket, risk_cut_sl, current_tp):
+                                        trade.current_sl = risk_cut_sl
+                                        save_active_trades()
+                                        logger.info(f"[{ticket}] Early risk reduction (20% TP1 move) | SL cut 50% closer to Entry {risk_cut_sl:.5f} at price {price:.5f}")
 
     elif phase == PHASE_PARTIAL_LOCK:
         move_to_tp1 = abs(tp1 - entry)
