@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Trading
     allowed_symbols: str | list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "BTCUSD", "XAUUSD"]
     default_volume: float = 0.01          # default trade volume in lots
+    eurusd_volume: float = 0.01           # lot size for EURUSD
+    usdjpy_volume: float = 0.01           # lot size for USDJPY
+    audusd_volume: float = 0.01           # lot size for AUDUSD
+    btcusd_volume: float = 0.01           # lot size for BTCUSD
     xauusd_volume: float = 0.01          # legacy, keeping for compatibility
     magic_number: int = 10001
     default_deviation: int = 20

@@ -240,7 +240,12 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             )
             return None
 
-    volume = settings.default_volume
+    symbol_vol_attr = f"{mt5_symbol.lower()}_volume"
+    if hasattr(settings, symbol_vol_attr):
+        volume = getattr(settings, symbol_vol_attr)
+    else:
+        volume = settings.default_volume
+
     if mt5_symbol == "XAUUSD":
         from datetime import timezone as dt_timezone, timedelta as dt_timedelta
         malaysia_tz = dt_timezone(dt_timedelta(hours=8))
