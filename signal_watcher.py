@@ -246,18 +246,35 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         malaysia_tz = dt_timezone(dt_timedelta(hours=8))
         malaysia_now = datetime.now(malaysia_tz)
         weekday = malaysia_now.weekday()
-        if weekday == 4:  # Friday
+
+        weekday_names = {0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday", 4: "friday", 5: "saturday", 6: "sunday"}
+        current_day_name = weekday_names.get(weekday, "").lower()
+
+        raw_allowed = settings.xauusd_allowed_weekdays
+        if isinstance(raw_allowed, str):
+            allowed_list = [x.strip().lower() for x in raw_allowed.split(",") if x.strip()]
+        elif isinstance(raw_allowed, list):
+            allowed_list = [str(x).strip().lower() for x in raw_allowed]
+        else:
+            allowed_list = ["monday", "tuesday"]
+
+        allowed_days = []
+        for item in allowed_list:
+            if item.isdigit():
+                num = int(item)
+                if num in weekday_names:
+                    allowed_days.append(weekday_names[num])
+            else:
+                allowed_days.append(item)
+
+        if current_day_name not in allowed_days:
             logger.warning(
-                f"Trade blocked (Friday Gold restriction): Trading XAUUSD is disabled on Fridays (Malaysia Time)."
+                f"Trade blocked (XAUUSD weekday restriction): Gold trading is only allowed on {', '.join(allowed_days)} "
+                f"(Current day: {current_day_name.capitalize()} in Malaysia Time)."
             )
             return None
-        elif weekday in (0, 1, 2, 3):  # Monday - Thursday
-            volume = settings.xauusd_weekday_volume
-        else:  # Weekend
-            logger.warning(
-                f"Trade blocked (Weekend Gold restriction): Trading XAUUSD is disabled on weekends (Malaysia Time)."
-            )
-            return None
+
+        volume = settings.xauusd_weekday_volume
 
     # ── SL/TP reduction (spread buffer) ──────────────────────────────────
     # Pull SL and TP closer to entry by sl_reduction_pct / tp_reduction_pct of the

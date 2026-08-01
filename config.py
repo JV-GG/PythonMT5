@@ -63,9 +63,10 @@ class Settings(BaseSettings):
     local_time_start: str = "10:00"
     local_time_end: str = "20:00"
 
-    # XAUUSD Specific Volumes
+    # XAUUSD Specific Volumes & Days
     xauusd_weekday_volume: float = 0.10
     xauusd_friday_volume: float = 0.01
+    xauusd_allowed_weekdays: str | list[str] = ["monday", "tuesday"]
 
     # Daily Profit Target Circuit Breaker
     daily_profit_target_enabled: bool = True
@@ -84,7 +85,7 @@ class Settings(BaseSettings):
     # Logging
     log_file: str = "trading.log"
 
-    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", mode="before")
+    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
     @classmethod
     def parse_list(cls, v: Any) -> list[str]:
         if isinstance(v, str):
