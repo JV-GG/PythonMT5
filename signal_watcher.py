@@ -299,7 +299,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             # SELL SL is above entry → move it down (closer)
             sl = round(sl - sl_reduction, 5)
 
-        logger.info(
+        logger.debug(
             f"SL reduced by {sl_reduction_pct*100:.0f}% for spread | "
             f"{pair_display} original_sl={original_sl:.5f} → adjusted_sl={sl:.5f}"
         )
@@ -316,7 +316,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         else:
             tp1_value = round(tp1_value + tp1_reduction, 5)
 
-        logger.info(
+        logger.debug(
             f"TP1 reduced by {tp_reduction_pct*100:.0f}% for spread | "
             f"{pair_display} original_tp1={original_tp1:.5f} → adjusted_tp1={tp1_value:.5f}"
         )
@@ -332,7 +332,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             else:
                 tp_final_value = round(tp_final_value + tp_final_reduction, 5)
 
-            logger.info(
+            logger.debug(
                 f"TP Final reduced by {tp_reduction_pct*100:.0f}% for spread | "
                 f"{pair_display} original_tp_final={original_tp_final:.5f} → adjusted_tp_final={tp_final_value:.5f}"
             )
@@ -349,18 +349,31 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     )
 
 
+_last_network_error_time: dict[str, float] = {}
+
 async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, Any] | None:
     """Fetch the latest signal for a pair from SignalTrade."""
     settings = get_settings()
     url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
+    now = time.time()
+    last_err_time = _last_network_error_time.get(pair_code, 0.0)
+
     try:
         response = await client.get(url, timeout=15.0)
         if response.status_code != 200:
-            logger.warning(f"SignalTrade returned {response.status_code} for {pair_code}")
+            if now - last_err_time > 60.0:
+                _last_network_error_time[pair_code] = now
+                logger.warning(f"SignalTrade returned {response.status_code} for {pair_code}")
+            else:
+                logger.debug(f"SignalTrade returned {response.status_code} for {pair_code}")
             return None
         return response.json()
     except httpx.RequestError as e:
-        logger.error(f"Failed to reach SignalTrade at {url}: {e}")
+        if now - last_err_time > 60.0:
+            _last_network_error_time[pair_code] = now
+            logger.error(f"Failed to reach SignalTrade at {url}: {e}")
+        else:
+            logger.debug(f"Failed to reach SignalTrade at {url}: {e}")
         return None
 
 
