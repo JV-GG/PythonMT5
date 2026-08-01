@@ -465,10 +465,12 @@ def _get_account_info() -> dict | None:
 def _reset_daily_metrics() -> None:
     """
     Snapshot the current balance as the reference point for the new trading session.
-    Resets at the start of each local trading day (10:00 AM local time).
+    Resets at the start of each trading day (10:00 AM Malaysia time).
     """
     global _daily_start_balance, _daily_loss_limit_hit, _daily_profit_target_hit, _last_reset_date, _peak_equity
-    local_now = datetime.now()
+    from datetime import timezone as dt_timezone, timedelta as dt_timedelta
+    malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+    local_now = datetime.now(malaysia_tz)
     today_str = local_now.strftime("%Y-%m-%d")
 
     settings = get_settings()
@@ -666,10 +668,12 @@ def _get_today_closed_profit() -> float:
     except Exception:
         sh, sm = 10, 0
 
-    local_now = datetime.now()
+    from datetime import timezone as dt_timezone, timedelta as dt_timedelta
+    malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+    local_now = datetime.now(malaysia_tz).replace(tzinfo=None)
     local_session_start = local_now.replace(hour=sh, minute=sm, second=0, microsecond=0)
 
-    # Calculate MT5 server time offset dynamically
+    # Calculate MT5 server time offset dynamically relative to Malaysia time
     tick = mt5.symbol_info_tick("EURUSD")
     if tick and tick.time > 0:
         server_now = datetime.fromtimestamp(tick.time)

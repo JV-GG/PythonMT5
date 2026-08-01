@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     default_comment: str = "SignalTrade Auto"
     max_positions_per_symbol: int = 2
     max_buy_positions_per_symbol: int = 1
+    max_sell_positions_per_symbol: int = 1
     tp_reduction_pct: float = 0.10         # reduce TP by X% of entry→TP distance (spread buffer)
     sl_reduction_pct: float = 0.10         # reduce SL by X% of entry→SL distance (spread buffer)
     # SignalTrade integration
