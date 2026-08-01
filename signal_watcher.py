@@ -260,14 +260,14 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             return None
 
     # ── SL/TP reduction (spread buffer) ──────────────────────────────────
-    # Pull SL and TP closer to entry by reduction_pct of the entry→level
-    # distance so that the broker spread doesn't eat into profit or
+    # Pull SL and TP closer to entry by sl_reduction_pct / tp_reduction_pct of the
+    # entry→level distance so that the broker spread doesn't eat into profit or
     # trigger SL prematurely.
-    reduction_pct = settings.tp_reduction_pct
-    if reduction_pct > 0:
+    sl_reduction_pct = settings.sl_reduction_pct
+    if sl_reduction_pct > 0:
         # SL reduction — pull closer to entry
         sl_distance = abs(sl - entry)
-        sl_reduction = sl_distance * reduction_pct
+        sl_reduction = sl_distance * sl_reduction_pct
         original_sl = sl
 
         if resolved_direction == "buy":
@@ -278,13 +278,15 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             sl = round(sl - sl_reduction, 5)
 
         logger.info(
-            f"SL reduced by {reduction_pct*100:.0f}% for spread | "
+            f"SL reduced by {sl_reduction_pct*100:.0f}% for spread | "
             f"{pair_display} original_sl={original_sl:.5f} → adjusted_sl={sl:.5f}"
         )
 
+    tp_reduction_pct = settings.tp_reduction_pct
+    if tp_reduction_pct > 0:
         # TP1 reduction — pull closer to entry
         tp1_distance = abs(tp1_value - entry)
-        tp1_reduction = tp1_distance * reduction_pct
+        tp1_reduction = tp1_distance * tp_reduction_pct
         original_tp1 = tp1_value
 
         if resolved_direction == "buy":
@@ -293,14 +295,14 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             tp1_value = round(tp1_value + tp1_reduction, 5)
 
         logger.info(
-            f"TP1 reduced by {reduction_pct*100:.0f}% for spread | "
+            f"TP1 reduced by {tp_reduction_pct*100:.0f}% for spread | "
             f"{pair_display} original_tp1={original_tp1:.5f} → adjusted_tp1={tp1_value:.5f}"
         )
 
         # TP Final reduction — pull closer to entry
         if tp_final_value is not None:
             tp_final_distance = abs(tp_final_value - entry)
-            tp_final_reduction = tp_final_distance * reduction_pct
+            tp_final_reduction = tp_final_distance * tp_reduction_pct
             original_tp_final = tp_final_value
 
             if resolved_direction == "buy":
@@ -309,7 +311,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
                 tp_final_value = round(tp_final_value + tp_final_reduction, 5)
 
             logger.info(
-                f"TP Final reduced by {reduction_pct*100:.0f}% for spread | "
+                f"TP Final reduced by {tp_reduction_pct*100:.0f}% for spread | "
                 f"{pair_display} original_tp_final={original_tp_final:.5f} → adjusted_tp_final={tp_final_value:.5f}"
             )
 
