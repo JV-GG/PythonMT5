@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 """
 Application configuration.
 All sensitive credentials and tunable parameters are centralized here.
