@@ -63,8 +63,18 @@ def _get_tick(symbol: str) -> dict | None:
 
 # ── Stop level validations ────────────────────────────────────────────────────
 
+MAX_SL_DISTANCE: dict[str, float] = {
+    "XAUUSD": 30.0,    # Max $30.00 price distance on Gold
+    "BTCUSD": 2500.0,  # Max $2500 price distance on BTC
+    "EURUSD": 0.0080,  # Max 80 pips
+    "USDJPY": 1.20,    # Max 120 pips
+    "AUDUSD": 0.0080,  # Max 80 pips
+    "GBPUSD": 0.0080,  # Max 80 pips
+}
+
+
 def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
-    """Ensure SL is on the correct side of current price and respects stops level."""
+    """Ensure SL is on the correct side of current price and respects stops level & max SL distance."""
     tick = _get_tick(symbol)
     if tick is None:
         return False
@@ -75,6 +85,11 @@ def _is_valid_sl(symbol: str, direction: str, sl: float) -> bool:
     point = sym_info.point
     min_distance = max(stops_level, 5) * point
     
+    current_price = tick["bid"] if direction == "buy" else tick["ask"]
+    max_sl_dist = MAX_SL_DISTANCE.get(symbol, 50.0)
+    if abs(current_price - sl) > max_sl_dist:
+        return False
+
     if direction == "buy":
         return sl < tick["bid"] - min_distance
     else:
@@ -152,6 +167,12 @@ def _process_one_position(pos: dict) -> None:
         return
     price = tick["bid"] if is_buy else tick["ask"]
 
+    # Fallback to position price_open if stored entry_price is invalid (0.0)
+    if trade.entry_price <= 0 and pos["price_open"] > 0:
+        trade.entry_price = pos["price_open"]
+        save_active_trades()
+        logger.info(f"[{ticket}] Fixed invalid 0.0 entry_price -> set to position price_open={pos['price_open']}")
+
     entry = trade.entry_price
     tp1 = trade.initial_tp1
     tp_final = trade.tp2 if trade.tp2 is not None else tp1
@@ -191,7 +212,11 @@ def _process_one_position(pos: dict) -> None:
                     if _modify_position(ticket, lock_50_sl, current_tp):
                         trade.current_sl = lock_50_sl
                         save_active_trades()
+<<<<<<< HEAD
                         logger.info(f"[{ticket}] Early 50% TP1 move | SL locked at +{settings.early_step_50_lock_pct:.0%} profit ({lock_50_sl:.5f}) at price {price:.5f}")
+=======
+                        logger.info(f"[{ticket}] Early 50% TP1 move | SL locked at +25% profit ({lock_50_sl:.5f}) at price {price:.5f}")
+>>>>>>> origin/Simon-Live
 
             else:
                 # 3. Check 40% trigger (Lock 10% TP1 profit)
@@ -205,7 +230,11 @@ def _process_one_position(pos: dict) -> None:
                         if _modify_position(ticket, lock_40_sl, current_tp):
                             trade.current_sl = lock_40_sl
                             save_active_trades()
+<<<<<<< HEAD
                             logger.info(f"[{ticket}] Early 40% TP1 move | SL locked at +{settings.early_step_40_lock_pct:.0%} profit ({lock_40_sl:.5f}) at price {price:.5f}")
+=======
+                            logger.info(f"[{ticket}] Early 40% TP1 move | SL locked at +10% profit ({lock_40_sl:.5f}) at price {price:.5f}")
+>>>>>>> origin/Simon-Live
 
                 else:
                     # 4. Check 30% trigger (Lock 5% TP1 profit)
@@ -219,7 +248,11 @@ def _process_one_position(pos: dict) -> None:
                             if _modify_position(ticket, lock_30_sl, current_tp):
                                 trade.current_sl = lock_30_sl
                                 save_active_trades()
+<<<<<<< HEAD
                                 logger.info(f"[{ticket}] Early 30% TP1 move | SL locked at +{settings.early_step_30_lock_pct:.0%} profit ({lock_30_sl:.5f}) at price {price:.5f}")
+=======
+                                logger.info(f"[{ticket}] Early 30% TP1 move | SL locked at +5% profit ({lock_30_sl:.5f}) at price {price:.5f}")
+>>>>>>> origin/Simon-Live
 
                     else:
                         # 5. Check 25% trigger (Lock 2% TP1 profit)
@@ -233,7 +266,11 @@ def _process_one_position(pos: dict) -> None:
                                 if _modify_position(ticket, lock_25_sl, current_tp):
                                     trade.current_sl = lock_25_sl
                                     save_active_trades()
+<<<<<<< HEAD
                                     logger.info(f"[{ticket}] Early 25% TP1 move | SL locked at +{settings.early_step_25_lock_pct:.0%} profit ({lock_25_sl:.5f}) at price {price:.5f}")
+=======
+                                    logger.info(f"[{ticket}] Early 25% TP1 move | SL locked at +2% profit ({lock_25_sl:.5f}) at price {price:.5f}")
+>>>>>>> origin/Simon-Live
 
                         else:
                             # 6. Check 20% trigger (Cut SL risk by 50%)
