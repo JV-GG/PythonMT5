@@ -148,15 +148,12 @@ def open_trade(request: TradeRequest) -> TradeResponse:
             f"Trade failed. Retcode={result.retcode} ({result.comment})"
         )
 
-    logger.info(
-        f"Trade executed | order_id={result.order} price={result.price} "
-        f"volume={result.volume} retcode={result.retcode}"
-    )
+    exec_price = result.price if (result.price is not None and result.price > 0) else price
 
     return TradeResponse(
         success=True,
         order_id=result.order,
-        executed_price=result.price,
+        executed_price=exec_price,
         message=f"Order {result.order} executed successfully.",
     )
 
@@ -315,11 +312,12 @@ def should_execute_trade(
     """
     settings = get_settings()
 
-    # Local time restrictions check
+    # Local time restrictions check (Enforced strictly in Malaysia Time UTC+8)
     if settings.local_time_restriction_enabled:
-        from datetime import time as dt_time
-        local_now = datetime.now()
-        current_time = local_now.time()
+        from datetime import time as dt_time, timezone as dt_timezone, timedelta as dt_timedelta
+        malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+        malaysia_now = datetime.now(malaysia_tz)
+        current_time = malaysia_now.time()
 
         try:
             sh, sm = map(int, settings.local_time_start.split(":"))
@@ -337,13 +335,13 @@ def should_execute_trade(
 
         if not allowed:
             logger.warning(
-                f"Trade blocked (local time restrictions): Current local time {local_now.strftime('%H:%M:%S')} "
+                f"Trade blocked (local time restrictions): Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
                 f"is outside the allowed window {settings.local_time_start} - {settings.local_time_end}."
             )
             return False
 
         logger.info(
-            f"Local time check passed: Current local time {local_now.strftime('%H:%M:%S')} "
+            f"Local time check passed: Current Malaysia time {malaysia_now.strftime('%H:%M:%S')} "
             f"is within the allowed window {settings.local_time_start} - {settings.local_time_end}."
         )
 
@@ -467,10 +465,12 @@ def _get_account_info() -> dict | None:
 def _reset_daily_metrics() -> None:
     """
     Snapshot the current balance as the reference point for the new trading session.
-    Resets at the start of each local trading day (10:00 AM local time).
+    Resets at the start of each trading day (10:00 AM Malaysia time).
     """
     global _daily_start_balance, _daily_loss_limit_hit, _daily_profit_target_hit, _last_reset_date, _peak_equity
-    local_now = datetime.now()
+    from datetime import timezone as dt_timezone, timedelta as dt_timedelta
+    malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+    local_now = datetime.now(malaysia_tz)
     today_str = local_now.strftime("%Y-%m-%d")
 
     settings = get_settings()
@@ -668,10 +668,12 @@ def _get_today_closed_profit() -> float:
     except Exception:
         sh, sm = 10, 0
 
-    local_now = datetime.now()
+    from datetime import timezone as dt_timezone, timedelta as dt_timedelta
+    malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+    local_now = datetime.now(malaysia_tz).replace(tzinfo=None)
     local_session_start = local_now.replace(hour=sh, minute=sm, second=0, microsecond=0)
 
-    # Calculate MT5 server time offset dynamically
+    # Calculate MT5 server time offset dynamically relative to Malaysia time
     tick = mt5.symbol_info_tick("EURUSD")
     if tick and tick.time > 0:
         server_now = datetime.fromtimestamp(tick.time)
@@ -771,10 +773,9 @@ def is_tp_distance_safe(
 ) -> tuple[bool, float | None]:
     """
     Check if the remaining TP1 distance from current market price is at least
-    `min_remaining_tp_pct` (default 70%) of the signal's original TP1 distance.
+    `min_remaining_tp_pct` (default 70%) of the ADJUSTED TP1 distance (after 20% buffer reduction).
 
-    Prevents entering trades where market price has already moved close to TP1,
-    which results in bad Risk:Reward ratios (e.g. risking $3.91 to win $0.29).
+    Calculated after spread buffer reduction on the adjusted TP1.
 
     Returns:
         (True, remaining_ratio)  → TP distance is sufficient, trade allowed
@@ -804,15 +805,15 @@ def is_tp_distance_safe(
     if remaining_ratio < min_pct:
         logger.warning(
             f"Trade blocked (Insufficient TP1 distance) for {symbol} {direction.upper()} | "
-            f"Only {remaining_ratio:.1%} of TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
-            f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, TP1={signal_tp1:.5f}"
+            f"Only {remaining_ratio:.1%} of adjusted TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
+            f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, Adjusted TP1={signal_tp1:.5f}"
         )
         return False, remaining_ratio
 
     logger.info(
         f"TP1 distance check passed for {symbol} {direction.upper()} | "
-        f"{remaining_ratio:.1%} of TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
-        f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, TP1={signal_tp1:.5f}"
+        f"{remaining_ratio:.1%} of adjusted TP1 distance remaining (Minimum required: {min_pct:.0%}) | "
+        f"Signal Entry={signal_entry:.5f}, Current Price={current_price:.5f}, Adjusted TP1={signal_tp1:.5f}"
     )
     return True, remaining_ratio
 
