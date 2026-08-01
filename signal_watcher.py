@@ -259,7 +259,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         if isinstance(raw_allowed, str):
             allowed_list = [x.strip().lower() for x in raw_allowed.split(",") if x.strip()]
         elif isinstance(raw_allowed, list):
-            allowed_list = [str(x).strip().lower() for x in raw_allowed]
+            allowed_list = [x.strip().lower() for x in raw_allowed]
         else:
             allowed_list = ["monday", "tuesday"]
 
