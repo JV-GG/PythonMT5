@@ -355,11 +355,12 @@ async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, 
     """Fetch the latest signal for a pair from SignalTrade."""
     settings = get_settings()
     url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
+    headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
     now = time.time()
     last_err_time = _last_network_error_time.get(pair_code, 0.0)
 
     try:
-        response = await client.get(url, timeout=15.0)
+        response = await client.get(url, headers=headers, timeout=15.0)
         if response.status_code != 200:
             if now - last_err_time > 60.0:
                 _last_network_error_time[pair_code] = now
@@ -544,10 +545,12 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
             # Record in SignalTrade's consecutive-direction tracker
             try:
+                headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
                 async with httpx.AsyncClient() as record_client:
                     await record_client.post(
                         f"{settings.signaltrade_url}/api/record-trade",
                         json={"symbol": pair_display, "direction": trade_req.order_type.upper()},
+                        headers=headers,
                         timeout=5.0,
                     )
                     logger.info(f"[TRACKER] Recorded {pair_display} {trade_req.order_type.upper()} in SignalTrade")
