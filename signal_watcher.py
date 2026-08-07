@@ -385,6 +385,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     for pair_code in SIGNALTRADE_PAIR_CODES:
         if pair_code not in settings.allowed_symbols:
             continue
+        if pair_code in settings.source2_symbols:
+            continue
         data = await _fetch_signal(client, pair_code)
         if data is None:
             continue
@@ -568,8 +570,12 @@ async def _watcher_loop() -> None:
     """
     settings = get_settings()
     interval = settings.signaltrade_poll_interval
+    source1_symbols = [s for s in SIGNALTRADE_PAIR_CODES if s in settings.allowed_symbols and s not in settings.source2_symbols]
 
-    logger.info(f"Signal watcher started — polling every {interval}s")
+    logger.info(
+        f"Signal watcher started — polling every {interval}s for Source 1 symbols: {source1_symbols} "
+        f"(Source 2 symbols excluded from polling: {settings.source2_symbols})"
+    )
 
     async with httpx.AsyncClient() as client:
         while True:

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
+    source2_symbols: str | list[str] = ["BTCUSD", "AUDUSD", "EURUSD", "GBPUSD"]   # Symbols handled directly via POST /trade API (excluded from Source 1 watcher polling)
 
     # Trade monitor (adaptive SL/TP)
     monitor_poll_interval: float = 1.0  # seconds between each monitor cycle
@@ -90,7 +91,7 @@ class Settings(BaseSettings):
     # Logging
     log_file: str = "trading.log"
 
-    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
+    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", "source2_symbols", mode="before")
     @classmethod
     def parse_list(cls, v: Any) -> list[str]:
         if isinstance(v, str):
