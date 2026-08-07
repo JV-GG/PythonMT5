@@ -33,13 +33,35 @@ class TradeInfo:
 
 class TradeRequest(BaseModel):
     symbol: str = Field(..., min_length=1, description="Trading symbol, e.g. GBPUSD")
-    volume: float = Field(..., gt=0, description="Trade volume (lots)")
+    volume: float | None = Field(default=None, description="Trade volume (lots). If omitted, uses symbol volume from .env")
     order_type: str = Field(..., description="Order type: 'buy' or 'sell'")
     sl: float = Field(..., description="Stop Loss price")
     tp: float = Field(..., description="Take Profit price (TP1 / initial TP)")
     tp1: float | None = Field(default=None, description="First take profit target (TP1)")
     tp_final: float | None = Field(default=None, description="Final take profit target (TP2 / TP Final)")
     comment: str | None = Field(default=None, description="Comment to be sent with trade request")
+
+    @model_validator(mode="after")
+    def resolve_volume(self) -> "TradeRequest":
+        # Always enforce symbol lot size from .env configuration
+        settings = get_settings()
+        sym_clean = self.symbol.upper().replace("/", "").strip()
+
+        if sym_clean == "XAUUSD":
+            from datetime import datetime, timezone as dt_timezone, timedelta as dt_timedelta
+            malaysia_tz = dt_timezone(dt_timedelta(hours=8))
+            malaysia_now = datetime.now(malaysia_tz)
+            if malaysia_now.weekday() == 4:  # Friday
+                self.volume = settings.xauusd_friday_volume
+            else:
+                self.volume = settings.xauusd_weekday_volume
+        else:
+            symbol_vol_attr = f"{sym_clean.lower()}_volume"
+            if hasattr(settings, symbol_vol_attr):
+                self.volume = getattr(settings, symbol_vol_attr)
+            else:
+                self.volume = settings.default_volume
+        return self
 
     @field_validator("order_type")
     @classmethod
