@@ -9,7 +9,10 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 
 from config import get_settings
 from mt5_service import (
@@ -406,17 +409,19 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if data is None:
             continue
 
-        pair_display = data.get("pair", "")
-        timestamp = data.get("timestamp", "")
-        confidence = data.get("aiSignal", {}).get("confidence", 0)
+        pair_display = data.get("pair") or data.get("stock") or pair_code
+        data["pair"] = pair_display
+
+        timestamp = data.get("timestamp") or data.get("created_at") or data.get("id") or ""
+        ai_raw = data.get("aiSignal") or {}
+        raw_direction = ai_raw.get("signal") or data.get("llm_signal") or ""
+        confidence = ai_raw.get("confidence") or data.get("llm_confidence") or 0
 
         if timestamp == _last_signals.get(pair_display):
             continue
 
         # Build a fingerprint from the direction and confidence.
         # This prevents duplicate trades when entry price and SL/TP levels suggested by the API drift slightly.
-        ai_raw = data.get("aiSignal", {})
-        raw_direction = ai_raw.get("signal", "")
         raw_fingerprint = f"{raw_direction}|{int(confidence)}"
 
         # Check if the same signal fingerprint was executed recently (cooldown period of 15 minutes)
@@ -458,12 +463,13 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         # and will be managed by their SL/TP.
         settings = get_settings()
         opposite = "sell" if trade_req.order_type == "buy" else "buy"
-        positions = mt5.positions_get(symbol=trade_req.symbol)  # Query active positions for symbol
+        positions = mt5.positions_get(symbol=trade_req.symbol) if (mt5 and not settings.dry_run) else None
         if positions:
             for pos in positions:
                 if pos.magic != settings.magic_number:
                     continue
-                pos_dir = "buy" if pos.type == mt5.ORDER_TYPE_BUY else "sell"
+                buy_type = getattr(mt5, "ORDER_TYPE_BUY", 0)
+                pos_dir = "buy" if pos.type == buy_type else "sell"
                 if pos_dir != opposite:
                     continue
                 # pos.profit includes swap + commission

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     mt5_password: str = ""
     mt5_server: str = ""
     mt5_terminal_path: str = ""
+    dry_run: bool = False                 # Set to True to simulate trades without real MT5 connection
 
     # API Security
     api_key: str = ""

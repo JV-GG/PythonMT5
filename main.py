@@ -6,7 +6,10 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 from fastapi import FastAPI, HTTPException, status
 
 from config import get_settings
@@ -48,6 +51,7 @@ class FileOnlyLogFilter(logging.Filter):
 
 
 settings = get_settings()
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 log_formatter = logging.Formatter(
     fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",

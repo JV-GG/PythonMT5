@@ -17,7 +17,10 @@ Started by main.py on app startup. Stops on app shutdown.
 import asyncio
 import logging
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 
 from config import get_settings
 from schemas import PHASE_INITIAL, PHASE_PARTIAL_LOCK, PHASE_TP1_HIT, TradeInfo
@@ -30,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 def _get_open_positions() -> list[dict]:
     """Fetch all open positions from MT5."""
-    if not mt5.terminal_info():
+    settings = get_settings()
+    if settings.dry_run or mt5 is None or not mt5.terminal_info():
         return []
     positions = mt5.positions_get()
     if positions is None:
@@ -413,6 +417,10 @@ def _sync_closed_positions(open_tickets: set[int]) -> None:
     Remove any registered trades that are no longer open in MT5.
     Call this at the end of each monitor cycle.
     """
+    settings = get_settings()
+    if settings.dry_run or mt5 is None or not mt5.terminal_info():
+        return
+
     stale = [tid for tid in active_trades if tid not in open_tickets]
     for tid in stale:
         unregister_trade(tid)
