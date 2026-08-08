@@ -164,9 +164,9 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     Returns None if the signal is NEUTRAL, invalid, or fails the
     session-aware confidence gate (all sessions: >= 20%).
     """
-    ai = signal_data.get("aiSignal", {})
-    direction: str = ai.get("signal", "NEUTRAL")
-    confidence: float = ai.get("confidence", 0)
+    ai = signal_data.get("aiSignal") or {}
+    direction: str = ai.get("signal") or signal_data.get("llm_signal") or "NEUTRAL"
+    confidence: float = ai.get("confidence") or signal_data.get("llm_confidence") or 0
 
     if direction not in ("BUY", "SELL"):
         return None
@@ -176,20 +176,25 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         logger.info(f"Signal skipped — {reason}")
         return None
 
-    entry = ai.get("entry")
-    sl = ai.get("stopLoss")
-    tp1_value = ai.get("takeProfit1")
-    tp_final_value = ai.get("takeProfit")
+    entry = ai.get("entry") or signal_data.get("entry")
+    sl = ai.get("stopLoss") or signal_data.get("stop_loss")
+    tp1_value = ai.get("takeProfit1") or signal_data.get("take_profit1") or signal_data.get("takeProfit1")
+    tp_final_value = ai.get("takeProfit") or signal_data.get("take_profit") or signal_data.get("takeProfit")
 
-    if not all(isinstance(v, (int, float)) and v > 0 for v in [entry, sl, tp1_value]):
+    pair_display: str = signal_data.get("pair") or signal_data.get("stock") or ""
+    signal_data["pair"] = pair_display
+
+    if entry is None or sl is None or tp1_value is None or not (entry > 0 and sl > 0 and tp1_value > 0):
         logger.warning(f"Invalid signal levels — entry={entry}, sl={sl}, tp1={tp1_value}")
         return None
 
     resolved_direction = "buy" if direction == "BUY" else "sell"
-    entry = float(entry)
-    sl = float(sl)
-    tp1_value = float(tp1_value)
-    tp_final_value = float(tp_final_value) if tp_final_value else None
+    entry_f = float(entry)
+    sl_f = float(sl)
+    tp1_f = float(tp1_value)
+    tp_final_f = float(tp_final_value) if tp_final_value is not None else None
+
+    entry, sl, tp1_value, tp_final_value = entry_f, sl_f, tp1_f, tp_final_f
 
     # Directional TP validation
     if resolved_direction == "sell":
@@ -352,23 +357,33 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 _last_network_error_time: dict[str, float] = {}
 
 async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, Any] | None:
-    """Fetch the latest signal for a pair from SignalTrade."""
+    """Fetch the latest signal for a pair from SignalTrade (supports both Client & Admin LLM portals)."""
     settings = get_settings()
-    url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
     headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
     now = time.time()
     last_err_time = _last_network_error_time.get(pair_code, 0.0)
 
+    # 1. Try Client Portal endpoint first (/api/signals/{pair_code})
+    url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
     try:
-        response = await client.get(url, headers=headers, timeout=15.0)
-        if response.status_code != 200:
-            if now - last_err_time > 60.0:
-                _last_network_error_time[pair_code] = now
-                logger.warning(f"SignalTrade returned {response.status_code} for {pair_code}")
-            else:
-                logger.debug(f"SignalTrade returned {response.status_code} for {pair_code}")
-            return None
-        return response.json()
+        response = await client.get(url, headers=headers, timeout=10.0)
+        if response.status_code == 200:
+            return response.json()
+        
+        # 2. Fallback to Admin LLM Portal endpoint (/api/dialogpt-signals)
+        admin_url = f"{settings.signaltrade_url}/api/dialogpt-signals?pair={pair_code}&limit=1"
+        admin_res = await client.get(admin_url, headers=headers, timeout=10.0)
+        if admin_res.status_code == 200:
+            items = admin_res.json().get("items", [])
+            if items:
+                return items[0]
+
+        if now - last_err_time > 60.0:
+            _last_network_error_time[pair_code] = now
+            logger.warning(f"SignalTrade returned status {response.status_code} for {pair_code}")
+        else:
+            logger.debug(f"SignalTrade returned status {response.status_code} for {pair_code}")
+        return None
     except httpx.RequestError as e:
         if now - last_err_time > 60.0:
             _last_network_error_time[pair_code] = now
