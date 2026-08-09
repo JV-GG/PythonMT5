@@ -32,3 +32,4 @@ active_trades.json
 # OS
 .DS_Store
 Thumbs.db
+*.py
