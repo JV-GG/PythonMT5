@@ -568,12 +568,20 @@ def is_drawdown_safe() -> tuple[bool, float | None]:
     # Baseline is the highest between starting balance and peak equity
     baseline = max(_daily_start_balance, _peak_equity)
 
-    # Dynamic drawdown limit: max(10% of baseline, $100 USD)
+    # Dynamic drawdown limit: max(1% of baseline, $25 USD)
     drawdown_pct = settings.daily_drawdown_pct
     min_usd = settings.daily_drawdown_min_usd
     allowed_loss_usd = max(baseline * drawdown_pct, min_usd)
 
-    current_loss_usd = baseline - current_equity
+    # Include today's closed losses + floating PnL in the loss calculation
+    closed_profit = _get_today_closed_profit()
+    floating_profit = current_equity - info["balance"]
+    today_total_pnl = closed_profit + floating_profit
+
+    closed_floating_loss = -today_total_pnl if today_total_pnl < 0 else 0.0
+    baseline_loss = baseline - current_equity if baseline > current_equity else 0.0
+    current_loss_usd = max(closed_floating_loss, baseline_loss)
+
     loss_percent = current_loss_usd / baseline if baseline > 0 else 0.0
 
     if _daily_loss_limit_hit:

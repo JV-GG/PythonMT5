@@ -1,8 +1,8 @@
-
 """
 Application configuration.
 All sensitive credentials and tunable parameters are centralized here.
 """
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     max_sell_positions_per_symbol: int = 1
     tp_reduction_pct: float = 0.10         # reduce TP by X% of entry→TP distance (spread buffer)
     sl_reduction_pct: float = 0.10         # reduce SL by X% of entry→SL distance (spread buffer)
+    min_rrr: float = 0.0                  # set to 0.0 to rely on 70% remaining TP distance guard instead of fixed RRR
+
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
@@ -56,7 +58,7 @@ class Settings(BaseSettings):
     trailing_sl_pct: float = 0.20          # trailing SL distance as percentage of entry-to-TP2 total move
 
     # Trading Session Restrictions
-    session_restrictions_enabled: bool = True
+    session_restrictions_enabled: bool = False
     allowed_sessions: str | list[str] = ["london", "asia"]
     avoid_sessions: str | list[str] = ["us"]
 
@@ -72,17 +74,17 @@ class Settings(BaseSettings):
 
     # Daily Profit Target Circuit Breaker
     daily_profit_target_enabled: bool = True
-    daily_profit_target_usd: float = 50.0   # Stop trading if profit reaches $50 USD
-    daily_profit_target_pct: float = 0.05   # Stop trading if profit reaches 5% of day's start balance
+    daily_profit_target_usd: float = 10.0   # Stop trading if profit reaches $10 USD
+    daily_profit_target_pct: float = 0.015  # Stop trading if profit reaches 1.5%
 
     # Dynamic Daily Drawdown Circuit Breaker
     daily_drawdown_enabled: bool = True
-    daily_drawdown_pct: float = 0.10        # 10% of day's peak/starting balance
-    daily_drawdown_min_usd: float = 100.0   # $100 USD minimum threshold
+    daily_drawdown_pct: float = 0.01        # 1% of day's peak/starting balance
+    daily_drawdown_min_usd: float = 25.0    # $25 USD minimum threshold
 
-    # Minimum Remaining TP Distance Filter (Risk:Reward Guard)
+    # Minimum Remaining TP Distance Filter
     min_remaining_tp_enabled: bool = True
-    min_remaining_tp_pct: float = 0.70      # Require at least 70% of TP1 distance remaining from current price
+    min_remaining_tp_pct: float = 0.70      # Require at least 70% of TP1 distance remaining
 
     # Logging
     log_file: str = "trading.log"
@@ -102,6 +104,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
