@@ -13,23 +13,20 @@ async def test_sources():
     print("1. TESTING SOURCE 1 (SignalWatcher Cloud Polling)")
     print("==================================================")
     
-    source1_symbols = [p for p in SIGNALTRADE_PAIR_CODES if p in settings.allowed_symbols and p not in settings.source2_symbols]
-    print(f"Source 1 Configured Symbols: {source1_symbols}")
+    tracked_symbols = [p for p in SIGNALTRADE_PAIR_CODES if p in settings.allowed_symbols]
+    print(f"Signal Watcher Configured Symbols: {tracked_symbols}")
     
     async with httpx.AsyncClient() as client:
-        for symbol in source1_symbols:
+        for symbol in tracked_symbols:
             data = await _fetch_signal(client, symbol)
             if data:
-                print(f"  [SUCCESS] Source 1 - {symbol}: Status 200 | Signal: {data.get('aiSignal', {}).get('signal')} | Confidence: {data.get('aiSignal', {}).get('confidence')}%")
+                print(f"  [SUCCESS] Signal Watcher - {symbol}: Status 200 | Signal: {data.get('aiSignal', {}).get('signal')} | Confidence: {data.get('aiSignal', {}).get('confidence')}%")
             else:
-                print(f"  [FAILED] Source 1 - {symbol}: No data returned")
+                print(f"  [FAILED] Signal Watcher - {symbol}: No data returned")
                 
     print("\n==================================================")
-    print("2. TESTING SOURCE 2 (Local REST API `POST /trade`)")
+    print("2. TESTING REST API (`POST /trade`)")
     print("==================================================")
-    
-    source2_symbols = settings.source2_symbols
-    print(f"Source 2 Configured Symbols: {source2_symbols}")
     
     # Test FastAPI endpoints using ASGITransport against the app instance
     transport = httpx.ASGITransport(app=app)
