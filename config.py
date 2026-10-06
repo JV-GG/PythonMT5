@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Trading
-    allowed_symbols: str | list[str] = ["GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "BTCUSD", "XAUUSD"]
+    allowed_symbols: str | list[str] = ["XAUUSD", "EURUSD", "USDJPY", "BTCUSD"]
     default_volume: float = 0.01          # default trade volume in lots
     eurusd_volume: float = 0.01           # lot size for EURUSD
     usdjpy_volume: float = 0.01           # lot size for USDJPY
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # XAUUSD Specific Volumes & Days
     xauusd_weekday_volume: float = 0.10
     xauusd_friday_volume: float = 0.01
-    xauusd_allowed_weekdays: str | list[str] = ["monday", "tuesday"]
+    xauusd_allowed_weekdays: str | list[str] = ["monday", "tuesday", "wednesday"]
 
     # Daily Profit Target Circuit Breaker
     daily_profit_target_enabled: bool = True

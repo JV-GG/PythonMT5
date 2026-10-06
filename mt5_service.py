@@ -82,6 +82,25 @@ def disconnect_mt5() -> None:
     logger.info("MT5 disconnected.")
 
 
+def resolve_symbol(symbol: str) -> str:
+    """
+    Resolve a symbol name to match the broker's exact MT5 symbol (e.g. XAUUSD -> XAUUSD-STD).
+    """
+    if mt5 is None or get_settings().dry_run:
+        return symbol
+    if mt5.symbol_select(symbol, True):
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is not None:
+            return symbol
+    for suffix in ["-STD", ".std", ".a", ".m", ".crp", "-S"]:
+        candidate = f"{symbol}{suffix}"
+        if mt5.symbol_select(candidate, True):
+            tick = mt5.symbol_info_tick(candidate)
+            if tick is not None:
+                return candidate
+    return symbol
+
+
 def open_trade(request: TradeRequest) -> TradeResponse:
     """
     Execute a trade on MT5.
@@ -89,7 +108,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     Raises MT5TradeError on failure.
     """
     settings = get_settings()
-    symbol = request.symbol
+    symbol = resolve_symbol(request.symbol)
 
     if settings.dry_run or not mt5.terminal_info():
         # Dry-run / macOS simulation execution
@@ -833,9 +852,10 @@ def is_tp_distance_safe(
         return True, None
 
     if current_price is None:
-        tick = mt5.symbol_info_tick(symbol)
+        resolved_sym = resolve_symbol(symbol)
+        tick = mt5.symbol_info_tick(resolved_sym)
         if tick is None:
-            logger.warning(f"Could not fetch tick for {symbol} to check TP distance")
+            logger.warning(f"Could not fetch tick for {symbol} (resolved: {resolved_sym}) to check TP distance")
             return False, None
         current_price = tick.ask if direction.lower() == "buy" else tick.bid
 
