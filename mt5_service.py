@@ -82,22 +82,63 @@ def disconnect_mt5() -> None:
     logger.info("MT5 disconnected.")
 
 
+_resolved_symbol_cache: dict[str, str] = {}
+
+
 def resolve_symbol(symbol: str) -> str:
     """
-    Resolve a symbol name to match the broker's exact MT5 symbol (e.g. XAUUSD -> XAUUSD-STD).
+    Resolve a symbol name to match the broker's exact MT5 tradeable symbol
+    (e.g. EURUSD -> EURUSD-STD, USDJPY -> USDJPY-STD, XAUUSD -> XAUUSD-STD).
+    Prioritizes fully tradeable symbols (trade_mode == SYMBOL_TRADE_MODE_FULL).
     """
     if mt5 is None or get_settings().dry_run:
         return symbol
-    if mt5.symbol_select(symbol, True):
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is not None:
-            return symbol
-    for suffix in ["-STD", ".std", ".a", ".m", ".crp", "-S"]:
-        candidate = f"{symbol}{suffix}"
-        if mt5.symbol_select(candidate, True):
-            tick = mt5.symbol_info_tick(candidate)
+
+    if symbol in _resolved_symbol_cache:
+        return _resolved_symbol_cache[symbol]
+
+    suffixes = ["-STD", ".std", ".a", ".m", ".crp", "-S", ""]
+    clean_symbol = symbol
+    for s in ["-STD", ".std", ".a", ".m", ".crp", "-S"]:
+        if symbol.upper().endswith(s.upper()):
+            clean_symbol = symbol[:-len(s)]
+            break
+
+    candidates = [f"{clean_symbol}{s}" for s in suffixes]
+
+    # Pass 1: Look for candidate that is selectable, has a tick, and has trade_mode == FULL
+    full_mode = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
+    for cand in candidates:
+        if mt5.symbol_select(cand, True):
+            info = mt5.symbol_info(cand)
+            if info and getattr(info, "trade_mode", 0) == full_mode:
+                tick = mt5.symbol_info_tick(cand)
+                if tick is not None:
+                    _resolved_symbol_cache[symbol] = cand
+                    logger.info(f"Resolved symbol '{symbol}' -> '{cand}' (trade_mode=FULL)")
+                    return cand
+
+    # Pass 2: Fallback to any candidate that is not disabled (trade_mode != 0) and has tick
+    disabled_mode = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
+    for cand in candidates:
+        if mt5.symbol_select(cand, True):
+            info = mt5.symbol_info(cand)
+            if info and getattr(info, "trade_mode", 0) != disabled_mode:
+                tick = mt5.symbol_info_tick(cand)
+                if tick is not None:
+                    _resolved_symbol_cache[symbol] = cand
+                    logger.info(f"Resolved symbol '{symbol}' -> '{cand}' (trade_mode={getattr(info, 'trade_mode', None)})")
+                    return cand
+
+    # Pass 3: Fallback - any candidate with a tick
+    for cand in candidates:
+        if mt5.symbol_select(cand, True):
+            tick = mt5.symbol_info_tick(cand)
             if tick is not None:
-                return candidate
+                _resolved_symbol_cache[symbol] = cand
+                return cand
+
+    _resolved_symbol_cache[symbol] = symbol
     return symbol
 
 
@@ -223,6 +264,7 @@ symbol_atr_multiplier: dict[str, float] = {
     "USDJPY": 1.0,
     "AUDUSD": 1.0,
     "BTCUSD": 1.0,
+    "XAUUSD": 1.0,
 }
 
 # Fallback minimum distances (used if ATR fetch fails).
@@ -232,6 +274,7 @@ FALLBACK_MIN_DISTANCE: dict[str, float] = {
     "USDJPY": 0.3,
     "AUDUSD": 0.003,
     "BTCUSD": 100.0,
+    "XAUUSD": 1.0,
 }
 
 
@@ -258,9 +301,10 @@ def get_atr(symbol: str, timeframe: int = getattr(mt5, "TIMEFRAME_M5", 5), perio
     if cached is not None and (now - cached["timestamp"]) < ATR_CACHE_TTL:
         return cached["value"]
 
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, period + 1)
+    resolved_sym = resolve_symbol(symbol)
+    rates = mt5.copy_rates_from_pos(resolved_sym, timeframe, 0, period + 1)
     if rates is None or len(rates) < period + 1:
-        logger.warning(f"ATR fetch failed for {symbol}: insufficient data")
+        logger.warning(f"ATR fetch failed for {symbol} (resolved: {resolved_sym}): insufficient data")
         return None
 
     # MT5 on Windows returns numpy.void rows that don't expose named attributes.
@@ -307,7 +351,8 @@ def get_dynamic_min_distance(symbol: str) -> float:
         Minimum distance in price units.
     """
     atr = get_atr(symbol)
-    multiplier = symbol_atr_multiplier.get(symbol, 1.0)
+    clean_sym = symbol.split("-")[0].split(".")[0].upper()
+    multiplier = symbol_atr_multiplier.get(symbol, symbol_atr_multiplier.get(clean_sym, 1.0))
 
     if atr is not None:
         min_dist = atr * multiplier
@@ -315,7 +360,7 @@ def get_dynamic_min_distance(symbol: str) -> float:
         return min_dist
 
     # Fallback to fixed values
-    fallback = FALLBACK_MIN_DISTANCE.get(symbol, 0.0)
+    fallback = FALLBACK_MIN_DISTANCE.get(symbol, FALLBACK_MIN_DISTANCE.get(clean_sym, 0.0))
     logger.warning(f"ATR unavailable for {symbol}, using fallback min_distance={fallback}")
     return fallback
 
@@ -432,19 +477,22 @@ def should_execute_trade(
     max_buy = settings.max_buy_positions_per_symbol
     max_sell = settings.max_sell_positions_per_symbol
 
+    resolved_sym = resolve_symbol(symbol)
+    matching_symbols = {symbol, resolved_sym}
+
     # Map ticket ID to direction ("buy" or "sell")
     active_positions: dict[int, str] = {}
 
     # 1. Count positions in active_trades registry (preferred — no MT5 round-trip)
     for order_id, trade in active_trades_ref.items():
-        if trade.symbol == symbol:
+        if trade.symbol in matching_symbols:
             active_positions[order_id] = trade.direction.lower()
 
     # 2. Count positions in MT5 (covers trades opened outside this system)
-    positions = mt5.positions_get()
+    positions = mt5.positions_get() if mt5 is not None else None
     if positions is not None:
         for position in positions:
-            if position.symbol == symbol and position.magic == settings.magic_number:
+            if position.symbol in matching_symbols and position.magic == settings.magic_number:
                 dir_str = "buy" if position.type == mt5.POSITION_TYPE_BUY else "sell"
                 active_positions[position.ticket] = dir_str
 
@@ -1042,9 +1090,10 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
     Returns:
         True if the position was closed successfully, False otherwise.
     """
-    tick = mt5.symbol_info_tick(symbol)
+    resolved_sym = resolve_symbol(symbol)
+    tick = mt5.symbol_info_tick(resolved_sym)
     if tick is None:
-        logger.error(f"Cannot close position {position_ticket}: no tick data for {symbol}")
+        logger.error(f"Cannot close position {position_ticket}: no tick data for {symbol} (resolved: {resolved_sym})")
         return False
 
     # Close a BUY by selling at bid, close a SELL by buying at ask
@@ -1057,7 +1106,7 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
+        "symbol": resolved_sym,
         "volume": volume,
         "type": close_type,
         "position": position_ticket,

@@ -18,6 +18,7 @@ from config import get_settings
 from mt5_service import (
     open_trade,
     close_position,
+    resolve_symbol,
     should_execute_trade,
     is_margin_safe,
     is_drawdown_safe,
@@ -461,7 +462,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         # and will be managed by their SL/TP.
         settings = get_settings()
         opposite = "sell" if trade_req.order_type == "buy" else "buy"
-        positions = mt5.positions_get(symbol=trade_req.symbol) if (mt5 and not settings.dry_run) else None
+        resolved_sym = resolve_symbol(trade_req.symbol)
+        positions = mt5.positions_get(symbol=resolved_sym) if (mt5 and not settings.dry_run) else None
         if positions:
             for pos in positions:
                 if pos.magic != settings.magic_number:
@@ -545,7 +547,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
             register_trade(
                 order_id=result.order_id,
-                symbol=trade_req.symbol,
+                symbol=resolve_symbol(trade_req.symbol),
                 direction=trade_req.order_type,
                 entry_price=result.executed_price,
                 initial_sl=trade_req.sl,

@@ -193,13 +193,36 @@ def _is_valid_tp(symbol: str, direction: str, tp: float) -> bool:
 
 # ── Phase 2 triggering ────────────────────────────────────────────────────────
 
+def _get_clean_symbol(symbol: str) -> str:
+    """Strip broker suffixes like -STD, .std, etc."""
+    clean = symbol.upper()
+    for s in ["-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
+        if clean.endswith(s):
+            clean = clean[:-len(s)]
+            break
+    return clean
+
+
+def _get_pip_size(symbol: str) -> float:
+    """Return pip size for the symbol."""
+    clean = _get_clean_symbol(symbol)
+    if clean == "BTCUSD":
+        return 1.0
+    elif clean == "XAUUSD":
+        return 0.1
+    elif clean in _JPY_PAIRS or "JPY" in clean:
+        return 0.01
+    else:
+        return 0.0001
+
+
 def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity_pips: float) -> bool:
     """Return True if the current market price is within `proximity_pips` pips of TP1."""
     tick = _get_tick(symbol)
     if tick is None:
         return False
     
-    pip_size = 0.01 if "JPY" in symbol else 0.0001
+    pip_size = _get_pip_size(symbol)
     proximity_price = proximity_pips * pip_size
     
     price = tick["ask"] if direction == "buy" else tick["bid"]
@@ -209,18 +232,6 @@ def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity_pips: 
 # ── Position processing ──────────────────────────────────────────────────────
 
 _JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "AUDJPY", "CADJPY", "CHFJPY"}
-
-
-def _get_pip_size(symbol: str) -> float:
-    """Return pip size for the symbol."""
-    if symbol == "BTCUSD":
-        return 1.0
-    elif symbol == "XAUUSD":
-        return 0.1
-    elif symbol in _JPY_PAIRS:
-        return 0.01
-    else:
-        return 0.0001
 
 
 def _process_one_position(pos: dict) -> None:
