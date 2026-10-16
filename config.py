@@ -90,6 +90,7 @@ class Settings(BaseSettings):
 
     # Logging
     log_file: str = "trading.log"
+    events_file: str = "logs/events.jsonl"   # structured one-JSON-per-line event log for analysis
 
     @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
     @classmethod

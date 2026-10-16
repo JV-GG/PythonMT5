@@ -24,7 +24,7 @@ except ImportError:
 
 from config import get_settings
 from schemas import PHASE_INITIAL, PHASE_PARTIAL_LOCK, PHASE_TP1_HIT, TradeInfo
-from mt5_service import active_trades, modify_position_sl_tp, unregister_trade, save_active_trades
+from mt5_service import active_trades, log_event, modify_position_sl_tp, unregister_trade, save_active_trades
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ def _process_one_position(pos: dict) -> None:
         if triggered_60:
             locked_sl = (entry + move_to_tp1 * settings.phase1_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_lock_pct)
             
-            success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, locked_sl, current_tp, current_sl, current_tp)
+            success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, locked_sl, current_tp, current_sl, current_tp, stage="phase1_60", price=price)
             if success:
                 trade.phase = PHASE_PARTIAL_LOCK
                 trade.current_sl = applied_sl
@@ -287,7 +287,7 @@ def _process_one_position(pos: dict) -> None:
 
             if triggered_50:
                 lock_50_sl = (entry + move_to_tp1 * settings.early_step_50_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_50_lock_pct)
-                success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_50_sl, current_tp, current_sl, current_tp)
+                success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_50_sl, current_tp, current_sl, current_tp, stage="early_50", price=price)
                 if success:
                     trade.current_sl = applied_sl
                     save_active_trades()
@@ -300,7 +300,7 @@ def _process_one_position(pos: dict) -> None:
 
                 if triggered_40:
                     lock_40_sl = (entry + move_to_tp1 * settings.early_step_40_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_40_lock_pct)
-                    success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_40_sl, current_tp, current_sl, current_tp)
+                    success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_40_sl, current_tp, current_sl, current_tp, stage="early_40", price=price)
                     if success:
                         trade.current_sl = applied_sl
                         save_active_trades()
@@ -313,7 +313,7 @@ def _process_one_position(pos: dict) -> None:
 
                     if triggered_30:
                         lock_30_sl = (entry + move_to_tp1 * settings.early_step_30_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_30_lock_pct)
-                        success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_30_sl, current_tp, current_sl, current_tp)
+                        success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_30_sl, current_tp, current_sl, current_tp, stage="early_30", price=price)
                         if success:
                             trade.current_sl = applied_sl
                             save_active_trades()
@@ -326,7 +326,7 @@ def _process_one_position(pos: dict) -> None:
 
                         if triggered_25:
                             lock_25_sl = (entry + move_to_tp1 * settings.early_step_25_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_25_lock_pct)
-                            success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_25_sl, current_tp, current_sl, current_tp)
+                            success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_25_sl, current_tp, current_sl, current_tp, stage="early_25", price=price)
                             if success:
                                 trade.current_sl = applied_sl
                                 save_active_trades()
@@ -340,7 +340,7 @@ def _process_one_position(pos: dict) -> None:
                             if triggered_20 and trade.initial_sl > 0:
                                 initial_risk = abs(entry - trade.initial_sl)
                                 risk_cut_sl = (entry - initial_risk * 0.50) if is_buy else (entry + initial_risk * 0.50)
-                                success, applied_sl, _ = _modify_position(ticket, symbol, direction, risk_cut_sl, current_tp, current_sl, current_tp)
+                                success, applied_sl, _ = _modify_position(ticket, symbol, direction, risk_cut_sl, current_tp, current_sl, current_tp, stage="risk_cut_20", price=price)
                                 if success:
                                     trade.current_sl = applied_sl
                                     save_active_trades()
@@ -360,7 +360,7 @@ def _process_one_position(pos: dict) -> None:
             else:
                 initial_tp_final = (tp1 + move_to_tp1) if is_buy else (tp1 - move_to_tp1)
 
-            success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, locked_sl, initial_tp_final, current_sl, current_tp)
+            success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, locked_sl, initial_tp_final, current_sl, current_tp, stage="tp1_hit", price=price)
             if success:
                 trade.phase = PHASE_TP1_HIT
                 trade.current_sl = applied_sl
@@ -374,7 +374,7 @@ def _process_one_position(pos: dict) -> None:
             sl_distance = move_to_tp1 * sl_distance_pct
             new_sl = (price - sl_distance) if is_buy else (price + sl_distance)
 
-            success, applied_sl, _ = _modify_position(ticket, symbol, direction, new_sl, current_tp, current_sl, current_tp)
+            success, applied_sl, _ = _modify_position(ticket, symbol, direction, new_sl, current_tp, current_sl, current_tp, stage="partial_trail", price=price)
             if success:
                 trade.current_sl = applied_sl
                 save_active_trades()
@@ -401,7 +401,7 @@ def _process_one_position(pos: dict) -> None:
             tp_distance = abs(tp1 - entry)
         new_tp = (price + tp_distance) if is_buy else (price - tp_distance)
 
-        success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, new_sl, new_tp, current_sl, current_tp)
+        success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, new_sl, new_tp, current_sl, current_tp, stage="tp1_trail", price=price)
         if success:
             trade.current_sl = applied_sl
             trade.current_tp = applied_tp
@@ -417,6 +417,8 @@ def _modify_position(
     target_tp: float,
     current_sl: float = 0.0,
     current_tp: float = 0.0,
+    stage: str = "",
+    price: float | None = None,
 ) -> tuple[bool, float, float]:
     """
     Send position modification to MT5 with retry resilience and SL clamping fallback.
@@ -457,8 +459,12 @@ def _modify_position(
             return False, current_sl, current_tp
 
         if result.retcode == mt5.TRADE_RETCODE_DONE:
+            log_event(
+                "sl_move", order_id=ticket, symbol=symbol, direction=direction, stage=stage, price=price,
+                old_sl=current_sl, new_sl=req_sl, target_sl=target_sl, old_tp=current_tp, new_tp=req_tp,
+            )
             if abs(req_sl - target_sl) > (1.0 * point):
-                logger.info(
+                logger.debug(
                     f"[{ticket}] {symbol} {direction.upper()} | Resilient Profit Lock | Target SL {target_sl:.{digits}f} clamped to safe level {req_sl:.{digits}f} "
                     f"due to price proximity (MT5 position updated successfully)."
                 )
@@ -495,7 +501,9 @@ def _modify_position(
                     else:
                         break
         else:
-            logger.warning(
+            # 10025 = "No changes": harmless, happens when the clamped level equals the current one
+            log = logger.debug if result.retcode == 10025 else logger.warning
+            log(
                 f"[{ticket}] {symbol} {direction.upper()} | Modify position failed — retcode={result.retcode} ({result.comment})"
             )
             break
@@ -537,8 +545,43 @@ def _sync_closed_positions(open_tickets: set[int]) -> None:
 
     stale = [tid for tid in active_trades if tid not in open_tickets]
     for tid in stale:
+        _log_trade_close(tid)
         unregister_trade(tid)
-        logger.info(f"[{tid}] Removed from monitor — position no longer open")
+
+
+_DEAL_REASONS = {0: "client", 1: "mobile", 2: "web", 3: "bot", 4: "SL", 5: "TP", 6: "stop_out"}
+
+
+def _log_trade_close(ticket: int) -> None:
+    """Log how a position closed (exit price, reason, profit) using MT5 deal history. Never raises."""
+    trade = active_trades.get(ticket)
+    detail = ""
+    try:
+        deals = (mt5.history_deals_get(position=ticket) or []) if mt5 is not None else []
+        outs = [d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT]
+        ins = [d for d in deals if d.entry == mt5.DEAL_ENTRY_IN]
+        if outs and trade is not None:
+            last = outs[-1]
+            volume = sum(d.volume for d in outs)
+            exit_price = sum(d.price * d.volume for d in outs) / volume if volume else last.price
+            profit = sum(d.profit + d.commission + d.swap for d in outs)
+            reason = _DEAL_REASONS.get(last.reason, str(last.reason))
+            held_min = (last.time - ins[0].time) / 60 if ins else None
+            move = (exit_price - trade.entry_price) if trade.direction == "buy" else (trade.entry_price - exit_price)
+            held = f" held={held_min:.1f}m" if held_min is not None else ""
+            detail = (
+                f" | {trade.symbol} {trade.direction.upper()} entry={trade.entry_price} exit={exit_price} "
+                f"reason={reason} profit={profit:.2f} move={move:.5f} last_phase={trade.phase}{held}"
+            )
+            log_event(
+                "trade_close", order_id=ticket, symbol=trade.symbol, direction=trade.direction,
+                entry_price=trade.entry_price, exit_price=exit_price, reason=reason, profit=round(profit, 2),
+                move=move, last_phase=trade.phase, final_sl=trade.current_sl, initial_sl=trade.initial_sl,
+                tp1=trade.initial_tp1, tp2=trade.tp2, held_minutes=round(held_min, 2) if held_min is not None else None,
+            )
+    except Exception:
+        logger.debug(f"[{ticket}] Could not read close details from MT5", exc_info=True)
+    logger.info(f"[{ticket}] Removed from monitor — position closed{detail}")
 
 
 _monitor_task: asyncio.Task | None = None

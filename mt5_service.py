@@ -2,6 +2,8 @@
 MetaTrader 5 service layer.
 Handles MT5 connection, trade execution, spacing checks, and risk management.
 """
+import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +19,28 @@ from schemas import TradeInfo, PHASE_INITIAL, TradeRequest, TradeResponse
 
 
 logger = logging.getLogger(__name__)
+
+
+def log_event(kind: str, **fields: Any) -> None:
+    """
+    Append one structured event to the events file (JSON Lines) for later analysis.
+    Never raises — event logging must not interfere with trading.
+    """
+    try:
+        path = get_settings().events_file
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        record = {
+            "ts": datetime.now().isoformat(timespec="milliseconds"),
+            "utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "kind": kind,
+            **fields,
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        logger.debug(f"Failed to write {kind} event", exc_info=True)
 
 
 class MT5ConnectionError(Exception):
@@ -232,9 +256,18 @@ def open_trade(request: TradeRequest) -> TradeResponse:
             f"Trade failed. Retcode={result.retcode} ({result.comment})"
         )
 
+    spread = tick.ask - tick.bid
+    # >0 = filled worse than the price we sent
+    slippage = (result.price - price) if request.order_type == "buy" else (price - result.price)
     logger.info(
         f"Trade executed | order_id={result.order} price={result.price} "
-        f"volume={result.volume} retcode={result.retcode}"
+        f"volume={result.volume} retcode={result.retcode} | requested={price} spread={spread:.5f} slippage={slippage:.5f}"
+    )
+    log_event(
+        "trade_open", order_id=result.order, symbol=symbol, direction=request.order_type, volume=result.volume,
+        requested_price=price, fill_price=result.price, spread=spread, slippage=slippage,
+        sl=request.sl, tp1=request.tp1 if request.tp1 is not None else request.tp, tp2=request.tp_final,
+        comment=trade_request["comment"],
     )
 
     return TradeResponse(
@@ -380,6 +413,10 @@ def _is_hour_in_session(hour: int, start: int, end: int) -> bool:
         return hour >= start or hour < end
 
 
+# Why the last should_execute_trade() call returned False (read by the watcher for event logging)
+last_skip_reason: str = ""
+
+
 def should_execute_trade(
     symbol: str,
     direction: str,
@@ -401,7 +438,9 @@ def should_execute_trade(
         True  → trade is allowed (fewer than limits for this symbol and direction)
         False → trade is blocked (limit reached)
     """
+    global last_skip_reason
     settings = get_settings()
+    last_skip_reason = ""
 
     # Local time restrictions check
     if settings.local_time_restriction_enabled:
@@ -428,6 +467,7 @@ def should_execute_trade(
                 f"Trade blocked (local time restrictions): Current local time {local_now.strftime('%H:%M:%S')} "
                 f"is outside the allowed window {settings.local_time_start} - {settings.local_time_end}."
             )
+            last_skip_reason = "local_time"
             return False
 
         logger.debug(
@@ -459,6 +499,7 @@ def should_execute_trade(
                 f"Trade blocked (session restrictions): Current time {utc_now.strftime('%H:%M:%S')} UTC "
                 f"is within avoided session(s) {matched_avoid_sessions}."
             )
+            last_skip_reason = "avoided_session"
             return False
 
         if not in_allowed:
@@ -466,9 +507,10 @@ def should_execute_trade(
                 f"Trade blocked (session restrictions): Current time {utc_now.strftime('%H:%M:%S')} UTC "
                 f"is not within any allowed session(s) {settings.allowed_sessions}."
             )
+            last_skip_reason = "outside_allowed_session"
             return False
 
-        logger.info(
+        logger.debug(
             f"Session check passed: Current time {utc_now.strftime('%H:%M:%S')} UTC is in allowed "
             f"session(s) {matched_allowed_sessions} and not in avoided sessions."
         )
@@ -503,6 +545,7 @@ def should_execute_trade(
             f"Trade skipped: Symbol {symbol} has {current_total} active positions, "
             f"reaching/exceeding the total limit of {max_total}."
         )
+        last_skip_reason = "max_total_positions"
         return False
 
     # Check direction-specific limits (max 5 buy, max 5 sell)
@@ -515,6 +558,7 @@ def should_execute_trade(
             f"Trade skipped: Symbol {symbol} has {current_dir_count} active {target_dir.upper()} positions, "
             f"reaching/exceeding the direction limit of {max_dir_allowed}."
         )
+        last_skip_reason = f"max_{target_dir}_positions"
         return False
 
     logger.info(
@@ -586,6 +630,8 @@ def _reset_daily_metrics() -> None:
         info = _get_account_info()
         if info is None:
             return
+        # None means this process just started (a restart), not a new trading session
+        reset_reason = "startup" if _last_reset_date is None else "new_session"
         _daily_start_balance = info["balance"]
         _daily_loss_limit_hit = False
         _daily_profit_target_hit = False
@@ -595,6 +641,7 @@ def _reset_daily_metrics() -> None:
             f"Daily metrics reset for {today_str} at {local_now.strftime('%H:%M:%S')} local time | "
             f"starting_balance={_daily_start_balance:.2f} (resets next trading session at {settings.local_time_start})"
         )
+        log_event("day_start", date=today_str, start_balance=_daily_start_balance, reason=reset_reason)
 
 
 def is_margin_safe(margin_threshold: float = 0.40) -> tuple[bool, dict | None]:
@@ -684,7 +731,8 @@ def is_drawdown_safe() -> tuple[bool, float | None]:
     loss_percent = current_loss_usd / baseline if baseline > 0 else 0.0
 
     if _daily_loss_limit_hit:
-        logger.warning(
+        # Already announced when the limit was first reached — don't repeat on every poll
+        logger.debug(
             f"Daily drawdown limit hit | trading paused until next session start at {settings.local_time_start} local time"
         )
         return False, loss_percent
@@ -696,10 +744,12 @@ def is_drawdown_safe() -> tuple[bool, float | None]:
             f"baseline=${baseline:.2f} current_equity=${current_equity:.2f} | "
             f"Trading paused until next session start at {settings.local_time_start} local time."
         )
+        log_event("breaker", breaker="daily_drawdown", loss_usd=round(current_loss_usd, 2),
+                  limit_usd=round(allowed_loss_usd, 2), baseline=baseline, equity=round(current_equity, 2))
         return False, loss_percent
 
     if current_loss_usd > 0:
-        logger.info(
+        logger.debug(
             f"Daily drawdown check passed | loss=${current_loss_usd:.2f} (limit=${allowed_loss_usd:.2f}) "
             f"baseline=${baseline:.2f}"
         )
@@ -827,7 +877,8 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
         return False, None
 
     if _daily_profit_target_hit:
-        logger.warning(
+        # Already announced when the target was first reached — don't repeat on every poll
+        logger.debug(
             f"Daily profit target hit | trading paused until next session start at {settings.local_time_start} local time"
         )
         return False, info
@@ -860,10 +911,12 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
             f"closed_profit={closed_profit:.2f} ({profit_pct:.2%} of start balance) | "
             f"Trading paused until next session start at {settings.local_time_start} local time."
         )
+        log_event("breaker", breaker="daily_profit_target", closed_profit=closed_profit,
+                  profit_pct=round(profit_pct, 4), target_usd=target_usd, target_pct=target_pct)
         return False, info
 
     if closed_profit > 0:
-        logger.info(
+        logger.debug(
             f"Daily profit check passed | closed_profit={closed_profit:.2f} ({profit_pct:.2%}) "
             f"targets: {target_usd:.2f} USD / {target_pct:.1%}"
         )

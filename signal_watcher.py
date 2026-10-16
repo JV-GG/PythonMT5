@@ -15,7 +15,9 @@ except ImportError:
     mt5 = None
 
 from config import get_settings
+import mt5_service
 from mt5_service import (
+    log_event,
     open_trade,
     close_position,
     resolve_symbol,
@@ -358,43 +360,93 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     )
 
 
-_last_network_error_time: dict[str, float] = {}
+# Feed outage state per pair: {"since": epoch, "failures": int, "reminded": epoch}
+_feed_down: dict[str, dict[str, Any]] = {}
+FEED_DOWN_REMINDER_S = 1800.0   # while still down, repeat the warning at most every 30 min
+
+
+def _feed_failed(pair_code: str, reason: str) -> None:
+    """Log a feed outage once when it starts (plus a reminder every 30 min), not on every poll."""
+    now = time.time()
+    state = _feed_down.get(pair_code)
+    if state is None:
+        _feed_down[pair_code] = {"since": now, "failures": 1, "reminded": now}
+        logger.warning(f"SignalTrade unreachable for {pair_code} ({reason}) — will log again when it recovers")
+        log_event("feed_down", pair=pair_code, reason=reason)
+        return
+    state["failures"] += 1
+    if now - state["reminded"] >= FEED_DOWN_REMINDER_S:
+        state["reminded"] = now
+        logger.warning(
+            f"SignalTrade still unreachable for {pair_code} after {(now - state['since']) / 60:.0f} min "
+            f"({state['failures']} failed polls, last: {reason})"
+        )
+    else:
+        logger.debug(f"SignalTrade unreachable for {pair_code}: {reason}")
+
+
+def _feed_ok(pair_code: str) -> None:
+    state = _feed_down.pop(pair_code, None)
+    if state is not None:
+        minutes = (time.time() - state["since"]) / 60
+        logger.info(f"SignalTrade reachable again for {pair_code} after {minutes:.1f} min ({state['failures']} failed polls)")
+        log_event("feed_up", pair=pair_code, down_minutes=round(minutes, 1), failed_polls=state["failures"])
+
 
 async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, Any] | None:
     """Fetch the latest signal for a pair from SignalTrade (supports both Client & Admin LLM portals)."""
     settings = get_settings()
     headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
-    now = time.time()
-    last_err_time = _last_network_error_time.get(pair_code, 0.0)
 
     # 1. Try Client Portal endpoint first (/api/signals/{pair_code})
     url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
     try:
         response = await client.get(url, headers=headers, timeout=10.0)
         if response.status_code == 200:
+            _feed_ok(pair_code)
             return response.json()
-        
+
         # 2. Fallback to Admin LLM Portal endpoint (/api/dialogpt-signals)
         admin_url = f"{settings.signaltrade_url}/api/dialogpt-signals?pair={pair_code}&limit=1"
         admin_res = await client.get(admin_url, headers=headers, timeout=10.0)
         if admin_res.status_code == 200:
             items = admin_res.json().get("items", [])
             if items:
+                _feed_ok(pair_code)
                 return items[0]
 
-        if now - last_err_time > 60.0:
-            _last_network_error_time[pair_code] = now
-            logger.warning(f"SignalTrade returned status {response.status_code} for {pair_code}")
-        else:
-            logger.debug(f"SignalTrade returned status {response.status_code} for {pair_code}")
+        _feed_failed(pair_code, f"HTTP {response.status_code}")
         return None
     except httpx.RequestError as e:
-        if now - last_err_time > 60.0:
-            _last_network_error_time[pair_code] = now
-            logger.error(f"Failed to reach SignalTrade at {url}: {e}")
-        else:
-            logger.debug(f"Failed to reach SignalTrade at {url}: {e}")
+        _feed_failed(pair_code, f"{type(e).__name__} {e}".strip())
         return None
+
+
+def _raw_signal_levels(signal_data: dict[str, Any]) -> dict[str, float | None]:
+    """Signal levels exactly as SignalTrade sent them (before the SL/TP reduction)."""
+    ai = signal_data.get("aiSignal") or {}
+
+    def num(v: Any) -> float | None:
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "entry_raw": num(ai.get("entry") or signal_data.get("entry")),
+        "sl_raw": num(ai.get("stopLoss") or signal_data.get("stop_loss")),
+        "tp1_raw": num(ai.get("takeProfit1") or signal_data.get("take_profit1") or signal_data.get("takeProfit1")),
+        "tp2_raw": num(ai.get("takeProfit") or signal_data.get("take_profit") or signal_data.get("takeProfit")),
+    }
+
+
+def _signal_outcome(signal_event: dict[str, Any], outcome: str, reason: str = "", **extra: Any) -> None:
+    """Write one 'signal' event with what happened to it (executed / blocked / rejected)."""
+    log_event("signal", **signal_event, outcome=outcome, reason=reason, **extra)
+
+
+# Losing opposite positions already reported as "left to float" (logged once per position, not per poll)
+_float_logged: set[int] = set()
 
 
 async def _poll_and_fire(client: httpx.AsyncClient) -> None:
@@ -447,14 +499,26 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         session = data.get("sessionInfo") or {}
         _last_signals[pair_display] = timestamp
+        ai = data.get("aiSignal", {})
+        signal_entry = ai.get("entry")
         logger.info(
             f"New {trade_req.order_type.upper()} signal for {pair_display} | "
             f"session={session.get('name', 'unknown')} ({session.get('quality', 'unknown')}) | "
-            f"confidence={confidence}% | sl={trade_req.sl} tp={trade_req.tp}"
+            f"confidence={confidence}% | sl={trade_req.sl} tp={trade_req.tp} tp2={trade_req.tp_final} "
+            f"signal_entry={signal_entry}"
         )
-
-        ai = data.get("aiSignal", {})
-        signal_entry = ai.get("entry")
+        signal_event: dict[str, Any] = {
+            "pair": pair_display,
+            "direction": trade_req.order_type,
+            "confidence": confidence,
+            "session": session.get("name"),
+            "session_quality": session.get("quality"),
+            "signal_id": str(timestamp),
+            **_raw_signal_levels(data),
+            "sl_sent": trade_req.sl,
+            "tp1_sent": trade_req.tp1 or trade_req.tp,
+            "tp2_sent": trade_req.tp_final,
+        }
 
         # ── Direction-flip: close profitable opposite positions ──────────
         # When signal flips (e.g. existing BUY → new SELL), close opposite
@@ -479,7 +543,9 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                         f"position {pos.ticket} | profit={pos.profit:.2f}"
                     )
                     close_position(pos.ticket, pos.symbol, pos.volume, pos_dir)
-                else:
+                    log_event("flip_close", order_id=pos.ticket, symbol=pos.symbol, direction=pos_dir, profit=pos.profit)
+                elif pos.ticket not in _float_logged:
+                    _float_logged.add(pos.ticket)
                     logger.info(
                         f"Direction flip: letting losing {pos_dir.upper()} "
                         f"position {pos.ticket} float | profit={pos.profit:.2f}"
@@ -491,6 +557,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"Trade blocked (margin) for {pair_display} | "
                 f"direction={trade_req.order_type}"
             )
+            _signal_outcome(signal_event, "blocked", "margin")
             return
 
         if not is_drawdown_safe()[0]:
@@ -498,6 +565,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"Trade blocked (drawdown) for {pair_display} | "
                 f"direction={trade_req.order_type}"
             )
+            _signal_outcome(signal_event, "blocked", "daily_drawdown")
             return
 
         if not is_daily_profit_target_safe()[0]:
@@ -505,21 +573,24 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"Trade blocked (daily profit target reached) for {pair_display} | "
                 f"direction={trade_req.order_type}"
             )
+            _signal_outcome(signal_event, "blocked", "daily_profit_target")
             return
 
         # Minimum Remaining TP Distance filter (Risk:Reward Guard)
         tp1_target = trade_req.tp1 or trade_req.tp
         if signal_entry is not None and tp1_target is not None:
-            if not is_tp_distance_safe(
+            tp_ok, tp_ratio = is_tp_distance_safe(
                 symbol=trade_req.symbol,
                 direction=trade_req.order_type,
                 signal_entry=float(signal_entry),
                 signal_tp1=tp1_target,
-            )[0]:
+            )
+            if not tp_ok:
                 logger.warning(
                     f"Trade blocked (Insufficient TP distance) for {pair_display} | "
                     f"direction={trade_req.order_type}"
                 )
+                _signal_outcome(signal_event, "blocked", "tp_distance", tp1_remaining_ratio=tp_ratio)
                 return
 
         # Spacing filter
@@ -534,6 +605,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                     f"Trade skipped (spacing) for {pair_display} | "
                     f"entry={signal_entry} direction={trade_req.order_type}"
                 )
+                _signal_outcome(signal_event, "blocked", mt5_service.last_skip_reason or "spacing")
                 return
 
         try:
@@ -559,6 +631,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             # unless the 15-minute cooldown period has passed.
             _last_executed_signal[pair_display] = raw_fingerprint
             _last_executed_time[pair_display] = time.time()
+            _signal_outcome(signal_event, "executed", order_id=result.order_id, fill_price=result.executed_price)
 
             logger.info(
                 f"Trade registered | order_id={result.order_id} symbol={trade_req.symbol} "
@@ -582,6 +655,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         except (MT5ConnectionError, MT5TradeError) as e:
             logger.error(f"Failed to fire trade for {pair_display}: {e}")
+            _signal_outcome(signal_event, "rejected", str(e)[:200])
 
 
 async def _watcher_loop() -> None:
