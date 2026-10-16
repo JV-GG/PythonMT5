@@ -471,6 +471,17 @@ def _signal_outcome(signal_event: dict[str, Any], outcome: str, reason: str = ""
 _float_logged: set[int] = set()
 
 
+def _signal_age_minutes(timestamp: Any) -> float | None:
+    """Minutes since an ISO signal timestamp, or None when it isn't one."""
+    try:
+        published = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if published.tzinfo is None:
+        return None
+    return (datetime.now(published.tzinfo) - published).total_seconds() / 60
+
+
 async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     """Poll all pairs once and fire trades for any new BUY/SELL signals."""
     settings = get_settings()
@@ -491,6 +502,14 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         confidence = ai_raw.get("confidence") or data.get("llm_confidence") or 0
 
         if timestamp == _last_signals.get(pair_display):
+            continue
+
+        # SignalTrade keeps serving a still-open trade's signal (same timestamp) until TP1 / SL. Only act on signals
+        # published in the last few minutes, so a restart or the market reopening never re-enters an old trade.
+        age_min = _signal_age_minutes(timestamp)
+        if age_min is not None and age_min > settings.max_signal_age_minutes:
+            _last_signals[pair_display] = timestamp
+            logger.info(f"Signal skipped (published {age_min:.0f} min ago) for {pair_display} | {raw_direction} {timestamp}")
             continue
 
         # ── Freshness: only act on a signal the platform generated moments ago ──

@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
+    max_signal_age_minutes: float = 10.0     # ignore signals published longer ago (a still-open trade is re-served with its old timestamp)
 
     # Trade monitor (adaptive SL/TP)
     monitor_poll_interval: float = 1.0  # seconds between each monitor cycle
