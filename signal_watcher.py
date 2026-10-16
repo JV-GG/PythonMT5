@@ -422,6 +422,17 @@ async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, 
         return None
 
 
+def _signal_age_seconds(timestamp: Any, now: float) -> float | None:
+    """Seconds since SignalTrade generated the signal (ISO-8601 timestamp), None if it can't be read."""
+    try:
+        generated = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if generated.tzinfo is None:
+        return None
+    return max(now - generated.timestamp(), 0.0)   # a clock a few seconds ahead still counts as fresh
+
+
 def _raw_signal_levels(signal_data: dict[str, Any]) -> dict[str, float | None]:
     """Signal levels exactly as SignalTrade sent them (before the SL/TP reduction)."""
     ai = signal_data.get("aiSignal") or {}
@@ -471,6 +482,21 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if timestamp == _last_signals.get(pair_display):
             continue
 
+        # ── Freshness: only act on a signal the platform generated moments ago ──
+        received_at = time.time()
+        signal_age = _signal_age_seconds(timestamp, received_at)
+        if raw_direction in ("BUY", "SELL") and (signal_age is None or signal_age > settings.max_signal_age_s):
+            _last_signals[pair_display] = timestamp
+            age_text = "unknown age" if signal_age is None else f"{signal_age:.0f}s old"
+            logger.warning(
+                f"Signal skipped (stale) for {pair_display} | {raw_direction} {age_text} "
+                f"(max {settings.max_signal_age_s:.0f}s) | timestamp={timestamp}"
+            )
+            log_event("signal", pair=pair_display, direction=raw_direction.lower(), confidence=confidence,
+                      signal_id=str(timestamp), signal_age_s=None if signal_age is None else round(signal_age, 1),
+                      outcome="blocked", reason="stale_signal")
+            continue
+
         # Build a fingerprint from the direction and confidence.
         # This prevents duplicate trades when entry price and SL/TP levels suggested by the API drift slightly.
         raw_fingerprint = f"{raw_direction}|{int(confidence)}"
@@ -514,6 +540,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             "session": session.get("name"),
             "session_quality": session.get("quality"),
             "signal_id": str(timestamp),
+            "signal_age_s": None if signal_age is None else round(signal_age, 1),
             **_raw_signal_levels(data),
             "sl_sent": trade_req.sl,
             "tp1_sent": trade_req.tp1 or trade_req.tp,
@@ -664,7 +691,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             # unless the 15-minute cooldown period has passed.
             _last_executed_signal[pair_display] = raw_fingerprint
             _last_executed_time[pair_display] = time.time()
-            _signal_outcome(signal_event, "executed", order_id=result.order_id, fill_price=result.executed_price)
+            _signal_outcome(signal_event, "executed", order_id=result.order_id, fill_price=result.executed_price,
+                            bot_latency_ms=round((time.time() - received_at) * 1000))
 
             logger.info(
                 f"Trade registered | order_id={result.order_id} symbol={trade_req.symbol} "

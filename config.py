@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     anchor_levels_to_market: bool = True
     max_entry_gap_sl_pct: float = 1.0       # skip the signal if broker price is more than this × SL distance from its entry
 
+    # Only trade signals generated in the last N seconds (age from SignalTrade's own timestamp).
+    # SignalTrade can serve cached signals up to ~30 min old; live fills so far used signals 0-13 s old.
+    max_signal_age_s: float = 30.0
+
     # Logging
     log_file: str = "trading.log"
     events_file: str = "logs/events.jsonl"   # structured one-JSON-per-line event log for analysis
