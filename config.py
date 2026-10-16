@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     min_remaining_tp_enabled: bool = True
     min_remaining_tp_pct: float = 0.70      # Require at least 70% of TP1 distance remaining from current price
 
+    # Re-anchor SL/TP to the broker's price at send time, keeping the signal's distances.
+    # SignalTrade prices come from a different feed (Deriv) and can sit $1-3 away from the broker on gold, which
+    # silently shrank or stretched the real SL/TP. Replay (Oct 2026, 185 gold signals): +$13.81 anchored vs +$0.92.
+    anchor_levels_to_market: bool = True
+    max_entry_gap_sl_pct: float = 1.0       # skip the signal if broker price is more than this × SL distance from its entry
+
     # Logging
     log_file: str = "trading.log"
     events_file: str = "logs/events.jsonl"   # structured one-JSON-per-line event log for analysis

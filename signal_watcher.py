@@ -551,6 +551,39 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                         f"position {pos.ticket} float | profit={pos.profit:.2f}"
                     )
 
+        # ── Re-anchor levels to the broker's price ───────────────────────
+        # Keep the signal's SL/TP distances but measure them from where this broker will actually fill.
+        if settings.anchor_levels_to_market and signal_entry and mt5 and not settings.dry_run:
+            tick = mt5.symbol_info_tick(resolved_sym)
+            info = mt5.symbol_info(resolved_sym)
+            if tick is None or info is None:
+                logger.warning(f"Trade blocked (no tick to anchor levels) for {pair_display}")
+                _signal_outcome(signal_event, "blocked", "no_tick")
+                return
+            market = tick.ask if trade_req.order_type == "buy" else tick.bid
+            shift = market - float(signal_entry)
+            sl_distance = abs(float(signal_entry) - trade_req.sl)
+            signal_event["entry_gap"] = round(shift, info.digits)
+            if sl_distance > 0 and abs(shift) > settings.max_entry_gap_sl_pct * sl_distance:
+                logger.warning(
+                    f"Trade blocked (entry gap) for {pair_display} | signal_entry={signal_entry} market={market} "
+                    f"gap={shift:+.{info.digits}f} > {settings.max_entry_gap_sl_pct:.0%} of SL distance {sl_distance:.{info.digits}f}"
+                )
+                _signal_outcome(signal_event, "blocked", "entry_gap")
+                return
+            trade_req.sl = round(trade_req.sl + shift, info.digits)
+            trade_req.tp = round(trade_req.tp + shift, info.digits)
+            if trade_req.tp1 is not None:
+                trade_req.tp1 = round(trade_req.tp1 + shift, info.digits)
+            if trade_req.tp_final is not None:
+                trade_req.tp_final = round(trade_req.tp_final + shift, info.digits)
+            signal_entry = market
+            signal_event.update(sl_sent=trade_req.sl, tp1_sent=trade_req.tp1 or trade_req.tp, tp2_sent=trade_req.tp_final)
+            logger.info(
+                f"Levels anchored to market for {pair_display} | gap={shift:+.{info.digits}f} | "
+                f"sl={trade_req.sl} tp1={trade_req.tp1 or trade_req.tp} tp2={trade_req.tp_final}"
+            )
+
         # Risk gates
         if not is_margin_safe()[0]:
             logger.warning(
