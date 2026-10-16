@@ -149,6 +149,17 @@ def get_confidence_comment(confidence: float) -> str:
     return f"{confidence}%"
 
 
+MT5_COMMENT_MAX = 31  # MT5 rejects / truncates order comments longer than 31 characters
+
+
+def get_trade_comment(confidence: float, signal_data: dict[str, Any]) -> str:
+    """MT5 order comment: confidence plus the AI provider that generated the signal, e.g. '40% claude'."""
+    provider = str(signal_data.get("aiProvider") or "").strip()
+    provider = "".join(ch for ch in provider if ch.isalnum() or ch in "-._")   # MT5 comments: plain ASCII only
+    comment = f"{get_confidence_comment(confidence)} {provider}".strip()
+    return comment[:MT5_COMMENT_MAX]
+
+
 def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
     """
     Transform a SignalTrade response into a TradeRequest for MT5.
@@ -356,7 +367,7 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
         tp=tp1_value,
         tp1=tp1_value,
         tp_final=tp_final_value,
-        comment=get_confidence_comment(confidence),
+        comment=get_trade_comment(confidence, signal_data),
     )
 
 
@@ -541,6 +552,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             "session_quality": session.get("quality"),
             "signal_id": str(timestamp),
             "signal_age_s": None if signal_age is None else round(signal_age, 1),
+            "ai_provider": data.get("aiProvider"),
+            "ai_model": data.get("aiModel"),
             **_raw_signal_levels(data),
             "sl_sent": trade_req.sl,
             "tp1_sent": trade_req.tp1 or trade_req.tp,
