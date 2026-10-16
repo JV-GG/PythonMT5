@@ -581,6 +581,67 @@ _last_reset_date: str | None = None
 _peak_equity: float | None = None
 EQUITY_DRAWDOWN_LIMIT = 0.10     # 10% drop from peak → block trading
 
+# The session state above is saved here so a restart mid-session keeps the day's
+# starting balance, equity peak and breaker flags instead of starting the day over.
+DAILY_STATE_FILE = "daily_state.json"
+
+
+def _save_daily_state() -> None:
+    """Persist the current session's risk state (skipped in dry-run so tests can't overwrite it)."""
+    if get_settings().dry_run or _last_reset_date is None:
+        return
+    state = {
+        "date": _last_reset_date,
+        "start_balance": _daily_start_balance,
+        "peak_equity": _peak_equity,
+        "loss_limit_hit": _daily_loss_limit_hit,
+        "profit_target_hit": _daily_profit_target_hit,
+    }
+    try:
+        tmp = DAILY_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, DAILY_STATE_FILE)
+    except Exception as e:
+        logger.warning(f"Could not save daily state: {e}")
+
+
+def _restore_daily_state(today_str: str, is_past_start_time: bool) -> bool:
+    """
+    On startup, reload the saved session state if it belongs to the session that is
+    still running: today's, or yesterday's when today's session hasn't started yet.
+    Returns True if the state was restored.
+    """
+    global _daily_start_balance, _daily_loss_limit_hit, _daily_profit_target_hit, _last_reset_date, _peak_equity
+    if get_settings().dry_run or not os.path.exists(DAILY_STATE_FILE):
+        return False
+    try:
+        with open(DAILY_STATE_FILE, encoding="utf-8") as f:
+            state = json.load(f)
+        saved_date = state["date"]
+        yesterday = (datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        if not (saved_date == today_str or (saved_date == yesterday and not is_past_start_time)):
+            return False
+        if not state.get("start_balance"):
+            return False
+        _daily_start_balance = float(state["start_balance"])
+        _peak_equity = float(state["peak_equity"]) if state.get("peak_equity") is not None else None
+        _daily_loss_limit_hit = bool(state.get("loss_limit_hit"))
+        _daily_profit_target_hit = bool(state.get("profit_target_hit"))
+        _last_reset_date = saved_date
+    except Exception as e:
+        logger.warning(f"Could not restore daily state ({e}) — starting a fresh session")
+        return False
+    logger.info(
+        f"Daily state restored for session {saved_date} | starting_balance={_daily_start_balance:.2f} "
+        f"peak_equity={_peak_equity} loss_limit_hit={_daily_loss_limit_hit} "
+        f"profit_target_hit={_daily_profit_target_hit}"
+    )
+    log_event("day_state_restored", date=saved_date, start_balance=_daily_start_balance,
+              peak_equity=_peak_equity, loss_limit_hit=_daily_loss_limit_hit,
+              profit_target_hit=_daily_profit_target_hit)
+    return True
+
 
 def _get_account_info() -> dict | None:
     """
@@ -626,6 +687,10 @@ def _reset_daily_metrics() -> None:
     # Check if current local time is at or past the session start time (e.g. 10:00 AM)
     is_past_start_time = (local_now.hour > sh) or (local_now.hour == sh and local_now.minute >= sm)
 
+    # After a restart, carry on with the session that is still running instead of resetting it
+    if _last_reset_date is None and _restore_daily_state(today_str, is_past_start_time):
+        return
+
     if _last_reset_date is None or (today_str > _last_reset_date and is_past_start_time):
         info = _get_account_info()
         if info is None:
@@ -642,6 +707,7 @@ def _reset_daily_metrics() -> None:
             f"starting_balance={_daily_start_balance:.2f} (resets next trading session at {settings.local_time_start})"
         )
         log_event("day_start", date=today_str, start_balance=_daily_start_balance, reason=reset_reason)
+        _save_daily_state()
 
 
 def is_margin_safe(margin_threshold: float = 0.40) -> tuple[bool, dict | None]:
@@ -711,6 +777,7 @@ def is_drawdown_safe() -> tuple[bool, float | None]:
     # Update peak equity watermark
     if _peak_equity is None or current_equity > _peak_equity:
         _peak_equity = current_equity
+        _save_daily_state()
 
     # Baseline is the highest between starting balance and peak equity
     baseline = max(_daily_start_balance, _peak_equity)
@@ -739,6 +806,7 @@ def is_drawdown_safe() -> tuple[bool, float | None]:
 
     if current_loss_usd >= allowed_loss_usd:
         _daily_loss_limit_hit = True
+        _save_daily_state()
         logger.warning(
             f"Daily drawdown limit reached | loss=${current_loss_usd:.2f} (limit=${allowed_loss_usd:.2f}) "
             f"baseline=${baseline:.2f} current_equity=${current_equity:.2f} | "
@@ -783,6 +851,7 @@ def is_equity_peak_safe(equity_drawdown_limit: float = EQUITY_DRAWDOWN_LIMIT) ->
     global _peak_equity
     if _peak_equity is None or current_equity > _peak_equity:
         _peak_equity = current_equity
+        _save_daily_state()
         logger.info(
             f"Equity peak updated | peak={_peak_equity:.2f} current={current_equity:.2f}"
         )
@@ -899,6 +968,7 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
 
     if hit_usd or hit_pct:
         _daily_profit_target_hit = True
+        _save_daily_state()
         if hit_usd and hit_pct:
             target_desc = f"both {target_usd:.2f} USD and {target_pct:.1%} equity targets"
         elif hit_usd:

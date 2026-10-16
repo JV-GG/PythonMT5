@@ -28,6 +28,7 @@ logs/
 
 # Local State / Runtime Cache
 active_trades.json
+daily_state.json
 
 # OS
 .DS_Store
