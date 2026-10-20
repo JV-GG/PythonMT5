@@ -24,7 +24,8 @@ except ImportError:
 
 from config import get_settings
 from schemas import PHASE_INITIAL, PHASE_PARTIAL_LOCK, PHASE_TP1_HIT, TradeInfo
-from mt5_service import active_trades, log_event, modify_position_sl_tp, unregister_trade, save_active_trades
+from mt5_service import active_trades, close_position, log_event, modify_position_sl_tp, unregister_trade, save_active_trades
+import news_guard
 
 logger = logging.getLogger(__name__)
 
@@ -527,11 +528,50 @@ async def _monitor_loop() -> None:
         try:
             positions = _get_open_positions()
             open_tickets = {pos["ticket"] for pos in positions}
+            if settings.news_close_enabled and positions and news_guard.refresh_due():
+                # The feed download (hourly) runs off the loop so position management never waits on it
+                await asyncio.to_thread(news_guard.load_events)
+            _guard_news(positions)
+            _news_closed.intersection_update(open_tickets)
+            _news_left.intersection_update(open_tickets)
             for pos in positions:
+                if pos["ticket"] in _news_closed:
+                    continue
                 _process_one_position(pos)
             _sync_closed_positions(open_tickets)
         except Exception:
             logger.exception("Unexpected error in monitor loop")
+
+
+# Positions closed before a release (skipped by the trailing logic), and losing ones already reported as left on their SL
+_news_closed: set[int] = set()
+_news_left: set[int] = set()
+
+
+def _guard_news(positions: list[dict]) -> None:
+    """Close the bot's profitable positions a few minutes before a high-impact release for their symbol."""
+    settings = get_settings()
+    if not settings.news_close_enabled or not positions:
+        return
+    events = news_guard.cached_events()
+    for pos in positions:
+        ticket = pos["ticket"]
+        if pos["magic"] != settings.magic_number or ticket in _news_closed:
+            continue
+        event = news_guard.upcoming_event(_get_clean_symbol(pos["symbol"]), events, settings.news_close_minutes_before)
+        if event is None:
+            continue
+        what = news_guard.describe(event)
+        if pos["profit"] > 0:
+            logger.info(f"[{ticket}] {pos['symbol']} {pos['type'].upper()} | News guard: closing in profit ({pos['profit']:.2f}) before {what}")
+            if close_position(ticket, pos["symbol"], pos["volume"], pos["type"], comment="News guard close"):
+                _news_closed.add(ticket)
+                log_event("news_close", order_id=ticket, symbol=pos["symbol"], direction=pos["type"], profit=pos["profit"], event=what)
+        elif ticket not in _news_left:
+            # Re-checked every cycle: closed if it turns profitable before the release; reported once
+            _news_left.add(ticket)
+            logger.info(f"[{ticket}] {pos['symbol']} {pos['type'].upper()} | News guard: losing ({pos['profit']:.2f}), left on its SL through {what}")
+            log_event("news_left", order_id=ticket, symbol=pos["symbol"], direction=pos["type"], profit=pos["profit"], event=what)
 
 
 def _sync_closed_positions(open_tickets: set[int]) -> None:
