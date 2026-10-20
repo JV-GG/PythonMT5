@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 try:
     import MetaTrader5 as mt5
@@ -75,6 +76,28 @@ logger = logging.getLogger(__name__)
 # Thread-safe flag to stop the trade manager loop (deprecated, consolidated into trade_monitor.py)
 
 
+def _log_trading_window() -> None:
+    """The local-time trading window in UTC too: it follows this machine's clock, so the same .env trades different
+    market hours on machines in different time zones."""
+    s = get_settings()
+    if not s.local_time_restriction_enabled:
+        logger.info("Trading window: no local-time restriction")
+        return
+    now = datetime.now().astimezone()
+    offset = now.utcoffset() or timedelta(0)
+
+    def to_utc(hhmm: str) -> str:
+        h, m = map(int, hhmm.split(":"))
+        minutes = (h * 60 + m - int(offset.total_seconds() // 60)) % (24 * 60)
+        return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+    hours = int(offset.total_seconds() // 3600)
+    logger.info(
+        f"Trading window: {s.local_time_start}–{s.local_time_end} local (UTC{hours:+d}) = "
+        f"{to_utc(s.local_time_start)}–{to_utc(s.local_time_end)} UTC | London 07:00–16:00, New York 12:00–21:00 UTC"
+    )
+
+
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -90,6 +113,7 @@ async def lifespan(app: FastAPI):
     
     # Restore active trades from persistence
     load_active_trades()
+    _log_trading_window()
     
     start_monitor()
     

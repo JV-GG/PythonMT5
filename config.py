@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # SignalTrade can serve cached signals up to ~30 min old; live fills so far used signals 0-13 s old.
     max_signal_age_s: float = 30.0
 
+    # News guard: a few minutes before a high-impact release (CPI, NFP, rate decisions) in a currency the position trades
+    # on, close the bot's positions there that are in profit; losing ones keep their stop loss (news_guard.py)
+    news_close_enabled: bool = True
+    news_close_minutes_before: float = 5.0
+
     # Logging
     log_file: str = "trading.log"
     events_file: str = "logs/events.jsonl"   # structured one-JSON-per-line event log for analysis

@@ -1200,7 +1200,7 @@ def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | N
     return result
 
 
-def close_position(position_ticket: int, symbol: str, volume: float, direction: str) -> bool:
+def close_position(position_ticket: int, symbol: str, volume: float, direction: str, comment: str = "Direction flip close") -> bool:
     """
     Close an open MT5 position by sending an opposite market order.
 
@@ -1236,7 +1236,7 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
         "price": price,
         "deviation": get_settings().default_deviation,
         "magic": get_settings().magic_number,
-        "comment": "Direction flip close",
+        "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
