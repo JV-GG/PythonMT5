@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     max_buy_positions_per_symbol: int = 1
     max_sell_positions_per_symbol: int = 1
     tp_reduction_pct: float = 0.10         # reduce TP by X% of entry→TP distance (spread buffer)
-    sl_reduction_pct: float = 0.10         # reduce SL by X% of entry→SL distance (spread buffer)
+    sl_reduction_pct: float = 0.0          # pull SL X% closer to entry. Not a spread buffer: a BUY's SL triggers on the bid, so
+                                           # spread already brings it closer; pulling it in more only adds stop-outs.
+                                           # Replay (Oct 2026, gold): signal SL as sent beat 10% closer (+$52 vs +$40)
     # SignalTrade integration
     signaltrade_url: str = "http://localhost:3000"
     signaltrade_poll_interval: float = 1.0   # seconds between each poll
@@ -59,6 +61,14 @@ class Settings(BaseSettings):
     phase1_lock_pct: float = 0.50          # percentage of TP1 distance locked as profit at Phase 1 trigger
     phase2_lock_pct: float = 0.70          # percentage of TP1 distance locked as profit when TP1 is hit
     trailing_sl_pct: float = 0.20          # trailing SL distance as percentage of entry-to-TP2 total move
+
+    # Noise floor: every SL the ladder sets stays at least k × ATR(M1) away from the current price (0 disables).
+    # The % steps above put the stop ~$0.6 from price after a $0.7 move, inside gold's normal 1-minute swings
+    # (ATR ~$1.4), so trades that later ran $9-15 were stopped at +$0.05. Replay (179 gold signals, Oct 7-20 2026):
+    # k=0.6 matched or beat the current ladder in every half of the data; all signals +$40.21 vs +$17.27,
+    # bot rules +$48.38 vs +$33.39. The floor never widens a stop: the SL still only ever moves toward profit.
+    noise_floor_atr_mult: float = 0.6
+    noise_floor_atr_period: int = 14       # completed M1 bars in the ATR
 
     # Trading Session Restrictions
     session_restrictions_enabled: bool = True

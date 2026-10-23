@@ -217,6 +217,22 @@ def _get_pip_size(symbol: str) -> float:
         return 0.0001
 
 
+def _m1_atr(symbol: str, period: int) -> float:
+    """Mean true range of the last `period` completed M1 bars; 0.0 when MT5 can't provide them."""
+    if mt5 is None:
+        return 0.0
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, period + 1)
+    if rates is None or len(rates) < period + 1:
+        return 0.0
+    true_ranges = [
+        max(rates[i]["high"] - rates[i]["low"],
+            abs(rates[i]["high"] - rates[i - 1]["close"]),
+            abs(rates[i]["low"] - rates[i - 1]["close"]))
+        for i in range(1, len(rates))
+    ]
+    return float(sum(true_ranges) / len(true_ranges))
+
+
 def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity_pips: float) -> bool:
     """Return True if the current market price is within `proximity_pips` pips of TP1."""
     tick = _get_tick(symbol)
@@ -264,15 +280,36 @@ def _process_one_position(pos: dict) -> None:
 
     settings = get_settings()
 
+    # ── Noise floor ──────────────────────────────────────────────────────────
+    # Every SL target below stays at least k × ATR(M1) from the current price, so normal 1-minute swings can't
+    # stop out a trade the ladder just locked (the % steps alone left ~$0.6 of room on gold vs ~$1.4 ATR).
+    # It only ever holds an SL back from moving closer; it never widens one.
+    noise_gap = 0.0
+    if settings.noise_floor_atr_mult > 0:
+        if trade.atr <= 0:
+            trade.atr = _m1_atr(symbol, settings.noise_floor_atr_period)
+            if trade.atr > 0:
+                save_active_trades()
+                logger.info(
+                    f"[{ticket}] {symbol} {direction.upper()} | ATR(M1) {trade.atr:.5f} -> SL kept at least "
+                    f"{settings.noise_floor_atr_mult * trade.atr:.5f} from price"
+                )
+        noise_gap = settings.noise_floor_atr_mult * trade.atr
+
+    def floor(target_sl: float) -> float:
+        if noise_gap <= 0:
+            return target_sl
+        return min(target_sl, price - noise_gap) if is_buy else max(target_sl, price + noise_gap)
+
     if phase == PHASE_INITIAL:
         # BUY: price moves up toward TP1; SELL: price moves down toward TP1
         move_to_tp1 = abs(tp1 - entry)
         threshold_60 = round((entry + move_to_tp1 * settings.phase1_trigger_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_trigger_pct), 6)
-        
+
         triggered_60 = (price >= threshold_60) if is_buy else (price <= threshold_60)
         if triggered_60:
-            locked_sl = (entry + move_to_tp1 * settings.phase1_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_lock_pct)
-            
+            locked_sl = floor((entry + move_to_tp1 * settings.phase1_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_lock_pct))
+
             success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, locked_sl, current_tp, current_sl, current_tp, stage="phase1_60", price=price)
             if success:
                 trade.phase = PHASE_PARTIAL_LOCK
@@ -287,7 +324,7 @@ def _process_one_position(pos: dict) -> None:
             triggered_50 = (price >= threshold_50) if is_buy else (price <= threshold_50)
 
             if triggered_50:
-                lock_50_sl = (entry + move_to_tp1 * settings.early_step_50_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_50_lock_pct)
+                lock_50_sl = floor((entry + move_to_tp1 * settings.early_step_50_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_50_lock_pct))
                 success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_50_sl, current_tp, current_sl, current_tp, stage="early_50", price=price)
                 if success:
                     trade.current_sl = applied_sl
@@ -300,7 +337,7 @@ def _process_one_position(pos: dict) -> None:
                 triggered_40 = (price >= threshold_40) if is_buy else (price <= threshold_40)
 
                 if triggered_40:
-                    lock_40_sl = (entry + move_to_tp1 * settings.early_step_40_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_40_lock_pct)
+                    lock_40_sl = floor((entry + move_to_tp1 * settings.early_step_40_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_40_lock_pct))
                     success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_40_sl, current_tp, current_sl, current_tp, stage="early_40", price=price)
                     if success:
                         trade.current_sl = applied_sl
@@ -313,7 +350,7 @@ def _process_one_position(pos: dict) -> None:
                     triggered_30 = (price >= threshold_30) if is_buy else (price <= threshold_30)
 
                     if triggered_30:
-                        lock_30_sl = (entry + move_to_tp1 * settings.early_step_30_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_30_lock_pct)
+                        lock_30_sl = floor((entry + move_to_tp1 * settings.early_step_30_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_30_lock_pct))
                         success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_30_sl, current_tp, current_sl, current_tp, stage="early_30", price=price)
                         if success:
                             trade.current_sl = applied_sl
@@ -326,7 +363,7 @@ def _process_one_position(pos: dict) -> None:
                         triggered_25 = (price >= threshold_25) if is_buy else (price <= threshold_25)
 
                         if triggered_25:
-                            lock_25_sl = (entry + move_to_tp1 * settings.early_step_25_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_25_lock_pct)
+                            lock_25_sl = floor((entry + move_to_tp1 * settings.early_step_25_lock_pct) if is_buy else (entry - move_to_tp1 * settings.early_step_25_lock_pct))
                             success, applied_sl, _ = _modify_position(ticket, symbol, direction, lock_25_sl, current_tp, current_sl, current_tp, stage="early_25", price=price)
                             if success:
                                 trade.current_sl = applied_sl
@@ -340,7 +377,7 @@ def _process_one_position(pos: dict) -> None:
 
                             if triggered_20 and trade.initial_sl > 0:
                                 initial_risk = abs(entry - trade.initial_sl)
-                                risk_cut_sl = (entry - initial_risk * 0.50) if is_buy else (entry + initial_risk * 0.50)
+                                risk_cut_sl = floor((entry - initial_risk * 0.50) if is_buy else (entry + initial_risk * 0.50))
                                 success, applied_sl, _ = _modify_position(ticket, symbol, direction, risk_cut_sl, current_tp, current_sl, current_tp, stage="risk_cut_20", price=price)
                                 if success:
                                     trade.current_sl = applied_sl
@@ -353,7 +390,7 @@ def _process_one_position(pos: dict) -> None:
         hit_tp1 = (price >= tp1) if is_buy else (price <= tp1)
         
         if near_tp1 or hit_tp1:
-            locked_sl = (entry + move_to_tp1 * settings.phase2_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase2_lock_pct)
+            locked_sl = floor((entry + move_to_tp1 * settings.phase2_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase2_lock_pct))
             
             # Determine initial extended TP for Phase 3
             if trade.tp2 is not None:
@@ -373,7 +410,7 @@ def _process_one_position(pos: dict) -> None:
             # SL trails: maintain the trigger-to-lock distance (e.g. 75% - 50% = 25% of TP1 distance)
             sl_distance_pct = settings.phase1_trigger_pct - settings.phase1_lock_pct
             sl_distance = move_to_tp1 * sl_distance_pct
-            new_sl = (price - sl_distance) if is_buy else (price + sl_distance)
+            new_sl = floor((price - sl_distance) if is_buy else (price + sl_distance))
 
             success, applied_sl, _ = _modify_position(ticket, symbol, direction, new_sl, current_tp, current_sl, current_tp, stage="partial_trail", price=price)
             if success:
@@ -394,6 +431,7 @@ def _process_one_position(pos: dict) -> None:
         else:
             if new_sl > tp1:
                 new_sl = tp1
+        new_sl = floor(new_sl)
 
         # Trail TP
         if trade.tp2 is not None:

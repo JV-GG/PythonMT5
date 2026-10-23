@@ -29,6 +29,7 @@ class TradeInfo:
     current_sl: float = 0.0
     current_tp: float = 0.0
     triggered_at: float = 0.0
+    atr: float = 0.0          # ATR(M1) when the monitor first saw the trade (noise floor); 0 = not measured yet
 
 
 class TradeRequest(BaseModel):

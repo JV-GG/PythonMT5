@@ -303,10 +303,10 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
         volume = settings.xauusd_weekday_volume
 
-    # ── SL/TP reduction (spread buffer) ──────────────────────────────────
-    # Pull SL and TP closer to entry by sl_reduction_pct / tp_reduction_pct of the
-    # entry→level distance so that the broker spread doesn't eat into profit or
-    # trigger SL prematurely.
+    # ── SL/TP reduction ──────────────────────────────────────────────────
+    # Pull TP closer to entry by tp_reduction_pct: a BUY opens at the ask but its TP triggers on the bid, so the
+    # market must travel TP distance + spread; a closer TP offsets that. SL gets the opposite effect from spread
+    # (it triggers sooner), so pulling it closer (sl_reduction_pct, default 0) adds stop-outs rather than protecting.
     sl_reduction_pct = settings.sl_reduction_pct
     if sl_reduction_pct > 0:
         # SL reduction — pull closer to entry

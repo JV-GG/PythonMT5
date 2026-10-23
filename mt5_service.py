@@ -1081,6 +1081,7 @@ def save_active_trades() -> None:
                 "current_sl": t.current_sl,
                 "current_tp": t.current_tp,
                 "triggered_at": t.triggered_at,
+                "atr": t.atr,
             }
             for oid, t in active_trades.items()
         }
@@ -1116,6 +1117,7 @@ def load_active_trades() -> None:
                 current_sl=val.get("current_sl", val["initial_sl"]),
                 current_tp=val.get("current_tp", val["initial_tp1"]),
                 triggered_at=val.get("triggered_at", 0.0),
+                atr=val.get("atr", 0.0),
             )
         logger.info(f"Loaded {len(active_trades)} active trades from persistence.")
     except Exception as e:
