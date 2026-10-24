@@ -898,6 +898,9 @@ def _get_today_closed_profit() -> float:
 
     local_now = datetime.now()
     local_session_start = local_now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    if local_now < local_session_start:
+        # Before today's session start (e.g. 02:00 with an 08:00 start) we are still in yesterday's session
+        local_session_start -= timedelta(days=1)
 
     # Calculate MT5 server time offset dynamically
     tick = mt5.symbol_info_tick("EURUSD")
