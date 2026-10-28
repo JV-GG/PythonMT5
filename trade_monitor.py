@@ -195,9 +195,9 @@ def _is_valid_tp(symbol: str, direction: str, tp: float) -> bool:
 # ── Phase 2 triggering ────────────────────────────────────────────────────────
 
 def _get_clean_symbol(symbol: str) -> str:
-    """Strip broker suffixes like -STD, .std, etc."""
+    """Strip broker suffixes like .sc, -STD, .std, etc."""
     clean = symbol.upper()
-    for s in ["-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
+    for s in [".SC", "-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
         if clean.endswith(s):
             clean = clean[:-len(s)]
             break
@@ -211,6 +211,8 @@ def _get_pip_size(symbol: str) -> float:
         return 1.0
     elif clean == "XAUUSD":
         return 0.1
+    elif clean == "XAGUSD":
+        return 0.01
     elif clean in _JPY_PAIRS or "JPY" in clean:
         return 0.01
     else:

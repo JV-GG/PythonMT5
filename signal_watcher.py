@@ -45,6 +45,7 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
     "AUD/USD": "AUDUSD",
     "BTC/USD": "BTCUSD",
     "XAU/USD": "XAUUSD",
+    "XAG/USD": "XAGUSD",
 }
 
 # JPY pairs trade in 0.01 increments (1 pip = 0.01); non-JPY in 0.0001 (1 pip = 0.0001).
@@ -77,6 +78,8 @@ def _correct_levels_from_pips(
         pip = 1.0
     elif symbol == "XAUUSD":
         pip = 0.1  # 1 Gold pip = $0.10
+    elif symbol == "XAGUSD":
+        pip = 0.01  # 1 Silver pip = $0.01
     else:
         pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
     sl_dist_pips = round(abs(sl) / pip)
@@ -618,7 +621,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             if tick is None or info is None:
                 logger.warning(f"Trade blocked (no tick to anchor levels) for {pair_display}")
                 _signal_outcome(signal_event, "blocked", "no_tick")
-                return
+                continue
             market = tick.ask if trade_req.order_type == "buy" else tick.bid
             shift = market - float(signal_entry)
             sl_distance = abs(float(signal_entry) - trade_req.sl)
@@ -629,7 +632,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                     f"gap={shift:+.{info.digits}f} > {settings.max_entry_gap_sl_pct:.0%} of SL distance {sl_distance:.{info.digits}f}"
                 )
                 _signal_outcome(signal_event, "blocked", "entry_gap")
-                return
+                continue
             trade_req.sl = round(trade_req.sl + shift, info.digits)
             trade_req.tp = round(trade_req.tp + shift, info.digits)
             if trade_req.tp1 is not None:
@@ -650,7 +653,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"direction={trade_req.order_type}"
             )
             _signal_outcome(signal_event, "blocked", "margin")
-            return
+            continue
 
         if not is_drawdown_safe()[0]:
             logger.warning(
@@ -658,7 +661,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"direction={trade_req.order_type}"
             )
             _signal_outcome(signal_event, "blocked", "daily_drawdown")
-            return
+            continue
 
         if not is_daily_profit_target_safe()[0]:
             logger.warning(
@@ -666,7 +669,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"direction={trade_req.order_type}"
             )
             _signal_outcome(signal_event, "blocked", "daily_profit_target")
-            return
+            continue
 
         # Minimum Remaining TP Distance filter (Risk:Reward Guard)
         tp1_target = trade_req.tp1 or trade_req.tp
@@ -683,7 +686,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                     f"direction={trade_req.order_type}"
                 )
                 _signal_outcome(signal_event, "blocked", "tp_distance", tp1_remaining_ratio=tp_ratio)
-                return
+                continue
 
         # Spacing filter
         if signal_entry is not None:
@@ -698,7 +701,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                     f"entry={signal_entry} direction={trade_req.order_type}"
                 )
                 _signal_outcome(signal_event, "blocked", mt5_service.last_skip_reason or "spacing")
-                return
+                continue
 
         try:
             result = open_trade(trade_req)

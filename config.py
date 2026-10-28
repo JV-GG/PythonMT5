@@ -20,12 +20,14 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Trading
-    allowed_symbols: str | list[str] = ["XAUUSD", "EURUSD", "USDJPY", "BTCUSD"]
+    allowed_symbols: str | list[str] = ["XAUUSD", "BTCUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY"]
     default_volume: float = 0.01          # default trade volume in lots
     eurusd_volume: float = 0.01           # lot size for EURUSD
+    gbpusd_volume: float = 0.01           # lot size for GBPUSD
     usdjpy_volume: float = 0.01           # lot size for USDJPY
     audusd_volume: float = 0.01           # lot size for AUDUSD
     btcusd_volume: float = 0.01           # lot size for BTCUSD
+    xagusd_volume: float = 0.01           # lot size for XAGUSD
     xauusd_volume: float = 0.01          # legacy, keeping for compatibility
     magic_number: int = 10001
     default_deviation: int = 20
@@ -118,7 +120,23 @@ class Settings(BaseSettings):
     log_file: str = "trading.log"
     events_file: str = "logs/events.jsonl"   # structured one-JSON-per-line event log for analysis
 
-    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
+    @field_validator("allowed_symbols", mode="before")
+    @classmethod
+    def parse_allowed_symbols(cls, v: Any) -> list[str]:
+        items = [x.strip() for x in v.split(",")] if isinstance(v, str) else list(v)
+        cleaned = []
+        for item in items:
+            if not item:
+                continue
+            u = item.strip().upper()
+            for s in [".SC", "-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
+                if u.endswith(s):
+                    u = u[:-len(s)]
+                    break
+            cleaned.append(u)
+        return cleaned
+
+    @field_validator("allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
     @classmethod
     def parse_list(cls, v: Any) -> list[str]:
         if isinstance(v, str):

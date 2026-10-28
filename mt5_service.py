@@ -121,9 +121,9 @@ def resolve_symbol(symbol: str) -> str:
     if symbol in _resolved_symbol_cache:
         return _resolved_symbol_cache[symbol]
 
-    suffixes = ["-STD", ".std", ".a", ".m", ".crp", "-S", ""]
+    suffixes = [".sc", ".SC", "-STD", ".std", ".a", ".m", ".crp", "-S", ""]
     clean_symbol = symbol
-    for s in ["-STD", ".std", ".a", ".m", ".crp", "-S"]:
+    for s in [".sc", ".SC", "-STD", ".std", ".a", ".m", ".crp", "-S"]:
         if symbol.upper().endswith(s.upper()):
             clean_symbol = symbol[:-len(s)]
             break
@@ -298,6 +298,7 @@ symbol_atr_multiplier: dict[str, float] = {
     "AUDUSD": 1.0,
     "BTCUSD": 1.0,
     "XAUUSD": 1.0,
+    "XAGUSD": 1.0,
 }
 
 # Fallback minimum distances (used if ATR fetch fails).
@@ -308,6 +309,7 @@ FALLBACK_MIN_DISTANCE: dict[str, float] = {
     "AUDUSD": 0.003,
     "BTCUSD": 100.0,
     "XAUUSD": 1.0,
+    "XAGUSD": 0.05,
 }
 
 
@@ -903,7 +905,7 @@ def _get_today_closed_profit() -> float:
         local_session_start -= timedelta(days=1)
 
     # Calculate MT5 server time offset dynamically
-    tick = mt5.symbol_info_tick("EURUSD")
+    tick = mt5.symbol_info_tick(resolve_symbol("EURUSD"))
     if tick and tick.time > 0:
         server_now = datetime.fromtimestamp(tick.time)
         time_diff = server_now - local_now
