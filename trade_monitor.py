@@ -274,6 +274,14 @@ def _process_one_position(pos: dict) -> None:
         return
     price = tick["bid"] if is_buy else tick["ask"]
 
+    # Ensure entry_price always reflects the real broker position open price (fixes Market Execution 0.0 entry)
+    if pos.get("price_open", 0.0) > 0 and (trade.entry_price <= 0 or abs(trade.entry_price - pos["price_open"]) > 1e-7):
+        logger.info(
+            f"[{ticket}] {symbol} {direction.upper()} | Syncing entry_price {trade.entry_price} -> {pos['price_open']} from MT5 position"
+        )
+        trade.entry_price = float(pos["price_open"])
+        save_active_trades()
+
     entry = trade.entry_price
     tp1 = trade.initial_tp1
     tp_final = trade.tp2 if trade.tp2 is not None else tp1
@@ -313,12 +321,17 @@ def _process_one_position(pos: dict) -> None:
             locked_sl = floor((entry + move_to_tp1 * settings.phase1_lock_pct) if is_buy else (entry - move_to_tp1 * settings.phase1_lock_pct))
 
             success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, locked_sl, current_tp, current_sl, current_tp, stage="phase1_60", price=price)
+            trade.phase = PHASE_PARTIAL_LOCK
             if success:
-                trade.phase = PHASE_PARTIAL_LOCK
                 trade.current_sl = applied_sl
                 trade.current_tp = applied_tp
-                save_active_trades()
+                current_sl = applied_sl
+                current_tp = applied_tp
                 logger.info(f"[{ticket}] {symbol} {direction.upper()} | Phase 1 lock SL applied (+50% TP1 distance) | applied_sl={applied_sl:.5f} (target={locked_sl:.5f}) price={price:.5f}")
+            else:
+                logger.info(f"[{ticket}] {symbol} {direction.upper()} | Phase 1 (60% TP1) reached at price={price:.5f}; transitioning to PHASE_PARTIAL_LOCK (SL already at {current_sl:.5f})")
+            save_active_trades()
+            phase = trade.phase
 
         elif settings.early_risk_reduction_enabled:
             # 2. Check 50% trigger (Lock 25% TP1 profit)
@@ -386,7 +399,7 @@ def _process_one_position(pos: dict) -> None:
                                     save_active_trades()
                                     logger.info(f"[{ticket}] {symbol} {direction.upper()} | Early risk reduction (20% TP1 move) | SL cut 50% closer to Entry ({applied_sl:.5f}) at price {price:.5f}")
 
-    elif phase == PHASE_PARTIAL_LOCK:
+    if phase == PHASE_PARTIAL_LOCK:
         move_to_tp1 = abs(tp1 - entry)
         near_tp1 = _is_price_near_tp1(symbol, direction, tp1, settings.monitor_tp1_proximity)
         hit_tp1 = (price >= tp1) if is_buy else (price <= tp1)

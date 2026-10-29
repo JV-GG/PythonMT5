@@ -256,16 +256,30 @@ def open_trade(request: TradeRequest) -> TradeResponse:
             f"Trade failed. Retcode={result.retcode} ({result.comment})"
         )
 
+    # On Market Execution accounts (e.g. Vantage .sc cent pairs), result.price in MqlTradeResult is often 0.0.
+    # Resolve actual fill price from the opened position or deal, falling back to the requested market price.
+    fill_price = float(result.price) if (result.price and result.price > 0) else 0.0
+    if fill_price <= 0.0:
+        pos_list = mt5.positions_get(ticket=result.order)
+        if pos_list and len(pos_list) > 0 and pos_list[0].price_open > 0:
+            fill_price = float(pos_list[0].price_open)
+    if fill_price <= 0.0 and getattr(result, "deal", 0) > 0:
+        deals = mt5.history_deals_get(ticket=result.deal)
+        if deals and len(deals) > 0 and deals[0].price > 0:
+            fill_price = float(deals[0].price)
+    if fill_price <= 0.0:
+        fill_price = float(price)
+
     spread = tick.ask - tick.bid
     # >0 = filled worse than the price we sent
-    slippage = (result.price - price) if request.order_type == "buy" else (price - result.price)
+    slippage = (fill_price - price) if request.order_type == "buy" else (price - fill_price)
     logger.info(
-        f"Trade executed | order_id={result.order} price={result.price} "
+        f"Trade executed | order_id={result.order} price={fill_price} (raw={result.price}) "
         f"volume={result.volume} retcode={result.retcode} | requested={price} spread={spread:.5f} slippage={slippage:.5f}"
     )
     log_event(
         "trade_open", order_id=result.order, symbol=symbol, direction=request.order_type, volume=result.volume,
-        requested_price=price, fill_price=result.price, spread=spread, slippage=slippage,
+        requested_price=price, fill_price=fill_price, spread=spread, slippage=slippage,
         sl=request.sl, tp1=request.tp1 if request.tp1 is not None else request.tp, tp2=request.tp_final,
         comment=trade_request["comment"],
     )
@@ -273,7 +287,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     return TradeResponse(
         success=True,
         order_id=result.order,
-        executed_price=result.price,
+        executed_price=fill_price,
         message=f"Order {result.order} executed successfully.",
     )
 
