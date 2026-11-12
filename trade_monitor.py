@@ -15,6 +15,7 @@ registry (mt5_service.py).
 Started by main.py on app startup. Stops on app shutdown.
 """
 import asyncio
+import time
 import logging
 
 try:
@@ -463,6 +464,9 @@ def _process_one_position(pos: dict) -> None:
             logger.info(f"[{ticket}] {symbol} {direction.upper()} | Trailing updated | new_sl={applied_sl:.5f} new_tp={applied_tp:.5f} price={price:.5f}")
 
 
+_last_modify_at: dict[int, float] = {}  # ticket -> time.monotonic() of the last modify request
+
+
 def _modify_position(
     ticket: int,
     symbol: str,
@@ -488,13 +492,26 @@ def _modify_position(
     best_tp_val = get_best_valid_tp(symbol, direction, target_tp, current_tp) if target_tp > 0 else current_tp
     best_tp: float = best_tp_val if best_tp_val is not None else current_tp
 
-    # Avoid unnecessary MT5 calls if no change
-    if (best_sl == current_sl or best_sl == 0.0) and (best_tp == current_tp or best_tp == 0.0):
-        return False, current_sl, current_tp
+    # TP only ever moves forward (further into profit), same rule get_best_valid_sl enforces for the SL
+    if current_tp > 0 and ((best_tp < current_tp) if direction == "buy" else (best_tp > current_tp)):
+        best_tp = current_tp
 
     sym_info = mt5.symbol_info(symbol)
     point = sym_info.point if sym_info else 0.00001
     digits = sym_info.digits if sym_info else 5
+
+    # Avoid unnecessary MT5 calls if no change (compared at broker precision, so float noise never sends a request)
+    sl_same = best_sl == 0.0 or round(best_sl, digits) == round(current_sl, digits)
+    tp_same = best_tp == 0.0 or round(best_tp, digits) == round(current_tp, digits)
+    if sl_same and tp_same:
+        return False, current_sl, current_tp
+
+    # Broker rate limit: at most one burst of modify requests per position every modify_min_interval_s,
+    # counted from the last request whether it succeeded or not (Vantage reset the account over modify spam)
+    now = time.monotonic()
+    if now - _last_modify_at.get(ticket, -1e9) < settings.modify_min_interval_s:
+        return False, current_sl, current_tp
+    _last_modify_at[ticket] = now
 
     for attempt in range(1, 4):
         req_sl = round(best_sl, digits)

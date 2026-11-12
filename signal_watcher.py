@@ -485,6 +485,9 @@ def _signal_age_minutes(timestamp: Any) -> float | None:
     return (datetime.now(published.tzinfo) - published).total_seconds() / 60
 
 
+_reject_until: dict[str, float] = {}  # pair -> time.time() until which opens are paused after a rejection
+
+
 async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     """Poll all pairs once and fire trades for any new BUY/SELL signals."""
     settings = get_settings()
@@ -545,6 +548,11 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"Signal skipped (same signal already executed within {COOLDOWN_PERIOD/60:.0f} mins) for {pair_display} | "
                 f"fingerprint={raw_fingerprint}"
             )
+            continue
+
+        # Back off after a broker rejection (no money, market closed, ...) instead of re-sending on every new signal
+        if time.time() < _reject_until.get(pair_display, 0.0):
+            _last_signals[pair_display] = timestamp
             continue
 
         trade_req = _transform_signal(data)
@@ -751,6 +759,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         except (MT5ConnectionError, MT5TradeError) as e:
             logger.error(f"Failed to fire trade for {pair_display}: {e}")
+            _reject_until[pair_display] = time.time() + settings.open_reject_cooldown_s
             _signal_outcome(signal_event, "rejected", str(e)[:200])
 
 

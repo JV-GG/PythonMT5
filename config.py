@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     # Trade monitor (adaptive SL/TP)
     monitor_poll_interval: float = 1.0  # seconds between each monitor cycle
+    modify_min_interval_s: float = 3.0  # min seconds between SL/TP modify requests per position (broker rate limit)
+    open_reject_cooldown_s: float = 300.0  # after the broker rejects an open, don't try that pair again for this long
     monitor_tp1_proximity: float = 5.0  # how close price must be to TP1 to trigger Phase 2 (in pips, e.g. 5.0)
 
     # Adaptive SL/TP Customization

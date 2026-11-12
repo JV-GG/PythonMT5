@@ -238,6 +238,14 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         "type_filling": order_type_filling,
     }
 
+    # Never send an order the account can't afford: the broker counts every "no money" rejection against us
+    needed = mt5.order_calc_margin(order_type, symbol, request.volume, price)
+    account = mt5.account_info()
+    if needed is not None and account is not None and needed > account.margin_free:
+        raise MT5TradeError(
+            f"Insufficient margin for {symbol}: need {needed:.2f}, free {account.margin_free:.2f}. Order not sent."
+        )
+
     logger.info(
         f"Executing trade | symbol={symbol} volume={request.volume} "
         f"type={request.order_type} price={price} sl={request.sl} tp={request.tp} "
@@ -283,6 +291,20 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         sl=request.sl, tp1=request.tp1 if request.tp1 is not None else request.tp, tp2=request.tp_final,
         comment=trade_request["comment"],
     )
+
+    # Adverse slippage: the fill is worse than the price the levels were measured from, which widens the SL and
+    # shrinks the TP. Shift both by the slippage (one request, forward only) so the planned distances hold.
+    info = mt5.symbol_info(symbol)
+    shift = round(fill_price - price, info.digits) if info else 0.0
+    if slippage > 0 and shift != 0:
+        new_sl, new_tp = round(request.sl + shift, info.digits), round(request.tp + shift, info.digits)
+        if getattr(modify_position_sl_tp(result.order, new_sl, new_tp), "retcode", None) == mt5.TRADE_RETCODE_DONE:
+            request.sl, request.tp = new_sl, new_tp
+            if request.tp1 is not None:
+                request.tp1 = round(request.tp1 + shift, info.digits)
+            if request.tp_final is not None:
+                request.tp_final = round(request.tp_final + shift, info.digits)
+            logger.info(f"Levels shifted {shift:+.{info.digits}f} for slippage | order_id={result.order} sl={new_sl} tp={new_tp}")
 
     return TradeResponse(
         success=True,
