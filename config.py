@@ -153,6 +153,18 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
-@lru_cache
+_cached_settings: Settings | None = None
+_cached_env_mtime: float = 0.0
+
+
 def get_settings() -> Settings:
-    return Settings()
+    global _cached_settings, _cached_env_mtime
+    import os
+    try:
+        mtime = os.path.getmtime(".env")
+    except OSError:
+        mtime = 0.0
+    if _cached_settings is None or mtime != _cached_env_mtime:
+        _cached_settings = Settings()
+        _cached_env_mtime = mtime
+    return _cached_settings

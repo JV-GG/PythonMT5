@@ -964,13 +964,6 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
     if info is None:
         return False, None
 
-    if _daily_profit_target_hit:
-        # Already announced when the target was first reached — don't repeat on every poll
-        logger.debug(
-            f"Daily profit target hit | trading paused until next session start at {settings.local_time_start} local time"
-        )
-        return False, info
-
     closed_profit = _get_today_closed_profit()
 
     # Calculate percentage based on starting balance (if available)
@@ -984,6 +977,22 @@ def is_daily_profit_target_safe() -> tuple[bool, dict | None]:
 
     hit_usd = closed_profit >= target_usd
     hit_pct = profit_pct >= target_pct
+
+    if _daily_profit_target_hit:
+        if not (hit_usd or hit_pct):
+            # Target in .env was increased above today's closed profit -> resume trading
+            _daily_profit_target_hit = False
+            _save_daily_state()
+            logger.info(
+                f"Daily profit target increased in .env (now {target_usd:.2f} / {target_pct:.1%}) above "
+                f"closed_profit={closed_profit:.2f} — resuming trading."
+            )
+            return True, info
+        # Already announced when the target was first reached — don't repeat on every poll
+        logger.debug(
+            f"Daily profit target hit | trading paused until next session start at {settings.local_time_start} local time"
+        )
+        return False, info
 
     if hit_usd or hit_pct:
         _daily_profit_target_hit = True
