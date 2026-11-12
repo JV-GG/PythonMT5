@@ -772,8 +772,10 @@ async def _watcher_loop() -> None:
     interval = settings.signaltrade_poll_interval
     tracked_symbols = [s for s in SIGNALTRADE_PAIR_CODES if s in settings.allowed_symbols]
 
+    broker_symbols = {s: resolve_symbol(s) for s in tracked_symbols}
+
     logger.info(
-        f"Signal watcher started — polling every {interval}s for symbols: {tracked_symbols}"
+        f"Signal watcher started — polling every {interval}s for symbols: {broker_symbols}"
     )
 
     async with httpx.AsyncClient() as client:

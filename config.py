@@ -2,10 +2,45 @@
 Application configuration.
 All sensitive credentials and tunable parameters are centralized here.
 """
+import re
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Any
+
+
+# Names brokers use instead of the pair code, with an optional USD and lowercase account suffix (GOLD, Goldm, SILVERUSD)
+_SYMBOL_ALIASES = {"GOLD": "XAUUSD", "SILVER": "XAGUSD", "BITCOIN": "BTCUSD"}
+_ALIAS_NAME = re.compile(r"((?i:GOLD|SILVER|BITCOIN))(?i:USD)?[a-z]*")
+
+
+def canonical_symbol(symbol: str) -> str:
+    """
+    Reduce any broker's name for an instrument to its base code, so XAUUSD.m, XAUUSD-STD, XAUUSD+, XAUUSDm,
+    the cent names XAUUSD.sc, XAUUSDc, XAUUSD.c and XAUUSDcent,
+    XAUUSDPRO, #XAUUSD, m.XAUUSD, XAU_USD, XAU/USD, GOLD and Gold.m are all XAUUSD.
+    Names with spaces ("Gold Futures") are descriptions of other products, so they are left whole.
+    """
+    name = symbol.strip().replace("/", "")
+    if " " in name:
+        return name.upper()
+
+    name = re.sub(r"^([A-Za-z]{3})[.\-_]([A-Za-z]{3})(?![A-Za-z0-9])", r"\1\2", name)  # XAU_USD, EUR.USD
+    name = re.sub(r"^(?:[^A-Za-z0-9]+|[A-Za-z]{1,3}[.\-_])", "", name)                  # #XAUUSD, m.XAUUSD
+    core = re.split(r"[^A-Za-z0-9]", name, maxsplit=1)[0]                               # XAUUSD.m, XAUUSD+
+
+    alias = _ALIAS_NAME.fullmatch(core)
+    if alias:
+        return _SYMBOL_ALIASES[alias.group(1).upper()]
+
+    if not core.islower():
+        core = re.sub(r"[a-z]+$", "", core)  # XAUUSDm, XAUUSDc, XAUUSDcent
+    core = core.upper()
+    # XAUUSDPRO is XAUUSD, but BTCUSDT is a different instrument from BTCUSD: its quote currency is USDT
+    if 6 < len(core) <= 9 and not core.endswith(("USDT", "USDC")):
+        core = core[:6]
+    return core or name.upper()
 
 
 class Settings(BaseSettings):
@@ -22,6 +57,7 @@ class Settings(BaseSettings):
     # Trading
     allowed_symbols: str | list[str] = ["XAUUSD", "BTCUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY"]
     default_volume: float = 0.01          # default trade volume in lots
+    cent_account: str = "auto"            # auto reads the account currency (USC...); true/false for brokers that show cents as USD
     eurusd_volume: float = 0.01           # lot size for EURUSD
     gbpusd_volume: float = 0.01           # lot size for GBPUSD
     usdjpy_volume: float = 0.01           # lot size for USDJPY
@@ -122,23 +158,13 @@ class Settings(BaseSettings):
     log_file: str = "trading.log"
     events_file: str = "logs/events.jsonl"   # structured one-JSON-per-line event log for analysis
 
-    @field_validator("allowed_symbols", mode="before")
+    @field_validator("allowed_symbols", mode="after")
     @classmethod
-    def parse_allowed_symbols(cls, v: Any) -> list[str]:
-        items = [x.strip() for x in v.split(",")] if isinstance(v, str) else list(v)
-        cleaned = []
-        for item in items:
-            if not item:
-                continue
-            u = item.strip().upper()
-            for s in [".SC", "-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
-                if u.endswith(s):
-                    u = u[:-len(s)]
-                    break
-            cleaned.append(u)
-        return cleaned
+    def canonicalise_allowed_symbols(cls, v: Any) -> Any:
+        # The rest of the bot compares base names, so XAUUSD.m in .env must still mean XAUUSD
+        return [canonical_symbol(s) for s in v]
 
-    @field_validator("allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
+    @field_validator("allowed_symbols", "allowed_sessions", "avoid_sessions", "xauusd_allowed_weekdays", mode="before")
     @classmethod
     def parse_list(cls, v: Any) -> list[str]:
         if isinstance(v, str):

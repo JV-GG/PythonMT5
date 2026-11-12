@@ -3,7 +3,7 @@ Pydantic models for request/response validation.
 """
 from dataclasses import dataclass
 from pydantic import BaseModel, Field, field_validator, model_validator
-from config import get_settings
+from config import canonical_symbol, get_settings
 
 
 # ── Trade info dataclass ────────────────────────────────────────────────────────
@@ -46,11 +46,7 @@ class TradeRequest(BaseModel):
     def resolve_volume(self) -> "TradeRequest":
         # Always enforce symbol lot size from .env configuration
         settings = get_settings()
-        sym_clean = self.symbol.upper().replace("/", "").strip()
-        for s in [".SC", "-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
-            if sym_clean.endswith(s):
-                sym_clean = sym_clean[:-len(s)]
-                break
+        sym_clean = canonical_symbol(self.symbol)
 
         if sym_clean == "XAUUSD":
             from datetime import datetime, timezone as dt_timezone, timedelta as dt_timedelta
@@ -81,20 +77,8 @@ class TradeRequest(BaseModel):
     def validate_symbol(cls, v: str) -> str:
         settings = get_settings()
         normalized = v.strip().upper()
-        clean = normalized
-        for s in [".SC", "-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
-            if clean.endswith(s):
-                clean = clean[:-len(s)]
-                break
-        allowed_raw = settings.allowed_symbols if isinstance(settings.allowed_symbols, list) else settings.allowed_symbols.split(",")
-        allowed = set()
-        for item in allowed_raw:
-            u = item.strip().upper()
-            allowed.add(u)
-            for s in [".SC", "-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
-                if u.endswith(s):
-                    allowed.add(u[:-len(s)])
-                    break
+        clean = canonical_symbol(v)
+        allowed = [s.strip().upper() for s in (settings.allowed_symbols if isinstance(settings.allowed_symbols, list) else settings.allowed_symbols.split(","))]
         if normalized not in allowed and clean not in allowed:
             raise ValueError(
                 f"Symbol '{v}' not allowed. Supported: {settings.allowed_symbols}"

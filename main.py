@@ -20,6 +20,7 @@ from mt5_service import (
     connect_mt5,
     disconnect_mt5,
     open_trade,
+    resolve_symbol,
     modify_position_sl_tp,
     should_execute_trade,
     is_margin_safe,
@@ -214,7 +215,7 @@ def _get_current_price(symbol: str, order_type: str) -> float | None:
     """
     if not mt5.terminal_info():
         return None
-    tick = mt5.symbol_info_tick(symbol)
+    tick = mt5.symbol_info_tick(resolve_symbol(symbol))
     if tick is None:
         return None
     return tick.ask if order_type.lower() == "buy" else tick.bid
@@ -230,7 +231,7 @@ async def trade(request: TradeRequest):
     """
     Execute a trade on MT5.
 
-    - **symbol**: Trading symbol (GBPUSD, EURUSD, USDJPY, AUDUSD, BTCUSD)
+    - **symbol**: Trading symbol (EURUSD, BTCUSD, XAUUSD, XAGUSD, etc.)
     - **volume**: Trade volume in lots
     - **order_type**: 'buy' or 'sell'
     - **sl**: Stop Loss price

@@ -3,7 +3,9 @@ MetaTrader 5 service layer.
 Handles MT5 connection, trade execution, spacing checks, and risk management.
 """
 import json
+import math
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -14,7 +16,7 @@ except ImportError:
 import logging
 from typing import Any
 
-from config import get_settings
+from config import canonical_symbol, get_settings
 from schemas import TradeInfo, PHASE_INITIAL, TradeRequest, TradeResponse
 
 
@@ -94,6 +96,8 @@ def connect_mt5() -> bool:
         return True
 
     logger.info(f"MT5 connected successfully. Account: {settings.mt5_login}")
+    if _money_divisor() > 1:
+        logger.info("Cent account: balance and profit are divided by 100, so the USD limits are real dollars")
     return True
 
 
@@ -108,61 +112,100 @@ def disconnect_mt5() -> None:
 
 _resolved_symbol_cache: dict[str, str] = {}
 
+# Account currencies that are counted in cents
+_CENT_CURRENCIES = {"USC", "EUC", "GBC", "AUC"}
+# How brokers mark a cent instrument: XAUUSD.sc, XAUUSD.c, XAUUSD-c, XAUUSD.cent, XAUUSDcent, XAUUSDc
+_CENT_NAME = re.compile(r"(?:[.\-_](?i:s?c|cent)|(?i:cent)|c)$")
+
+def _is_dated_contract(info: Any) -> bool:
+    """Futures can pass as CFDs in calc mode and carry no expiry (XAU.F26.m), so the path and name are checked too."""
+    return (
+        bool(info.expiration_time)
+        or "futur" in info.path.lower()
+        or re.search(r"[.\-_][A-Za-z]{1,3}\d{2}(?![A-Za-z0-9])", info.name) is not None
+    )
+
+
+def _broker_symbols(canonical: str) -> list[Any]:
+    """
+    Ask MT5 for every instrument that is `canonical` under the broker's naming, best first.
+    A broker can list several (Prorex has XAUUSD and XAUUSD.m), so the order is fixed rather than
+    price-based: fully tradeable, then matching the account type (cent names on a cent account, the
+    others on a standard one), then in Market Watch, then named with the pair code over an alias like
+    GOLD, then suffixed over plain, as the suffix marks the account's own instrument.
+    A restart must not move the bot to a different symbol.
+    """
+    disabled_mode = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
+    full_mode = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
+    matches = [
+        info for info in (mt5.symbols_get() or ())
+        if canonical_symbol(info.name) == canonical and info.trade_mode != disabled_mode and not _is_dated_contract(info)
+    ]
+    cent = _money_divisor() > 1
+    return sorted(matches, key=lambda s: (
+        s.trade_mode != full_mode, bool(_CENT_NAME.search(s.name)) != cent, not s.visible, canonical not in s.name.upper(), s.name == canonical, s.name,
+    ))
+
+
+def _filling_mode(symbol: str) -> int:
+    """Pick a filling mode the broker accepts for this symbol: its filling_mode is a bitmask of FOK=1, IOC=2."""
+    flags = getattr(mt5.symbol_info(symbol), "filling_mode", 0)
+    if flags & 2:
+        return mt5.ORDER_FILLING_IOC
+    if flags & 1:
+        return mt5.ORDER_FILLING_FOK
+    return mt5.ORDER_FILLING_RETURN
+
+
+def _broker_volume(symbol: str, volume: float) -> float:
+    """
+    Fit the configured lot to the broker's limits for this symbol, which differ by broker and account type.
+    Only ever rounds down: a lot under the minimum is refused, as raising it would risk more than configured.
+    """
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return volume
+
+    capped = min(volume, info.volume_max) if info.volume_max else volume
+    step = info.volume_step or 0.01
+    fitted = round(math.floor(capped / step + 1e-9) * step, 8)
+    if fitted < info.volume_min:
+        raise MT5TradeError(
+            f"Lot {volume} for {symbol} is below the broker minimum {info.volume_min}. "
+            f"Raise this symbol's volume in .env to trade it."
+        )
+    if fitted != volume:
+        logger.warning(
+            f"Lot for {symbol} adjusted {volume} -> {fitted} (broker min={info.volume_min} "
+            f"max={info.volume_max} step={info.volume_step})"
+        )
+    return fitted
+
 
 def resolve_symbol(symbol: str) -> str:
     """
-    Resolve a symbol name to match the broker's exact MT5 tradeable symbol
-    (e.g. EURUSD -> EURUSD-STD, USDJPY -> USDJPY-STD, XAUUSD -> XAUUSD-STD).
-    Prioritizes fully tradeable symbols (trade_mode == SYMBOL_TRADE_MODE_FULL).
+    Resolve a symbol name to the broker's exact MT5 tradeable symbol by reading the broker's own
+    symbol list (e.g. XAUUSD -> XAUUSD.m), so a new broker naming needs no code change.
+    A cached name is re-checked because the broker can drop it while the bot is running.
     """
     if mt5 is None or get_settings().dry_run:
         return symbol
 
-    if symbol in _resolved_symbol_cache:
-        return _resolved_symbol_cache[symbol]
+    cached = _resolved_symbol_cache.get(symbol)
+    if cached is not None and mt5.symbol_info(cached) is not None:
+        return cached
 
-    suffixes = [".sc", ".SC", "-STD", ".std", ".a", ".m", ".crp", "-S", ""]
-    clean_symbol = symbol
-    for s in [".sc", ".SC", "-STD", ".std", ".a", ".m", ".crp", "-S"]:
-        if symbol.upper().endswith(s.upper()):
-            clean_symbol = symbol[:-len(s)]
-            break
+    matches = _broker_symbols(canonical_symbol(symbol))
+    for info in matches:
+        if mt5.symbol_select(info.name, True) and mt5.symbol_info_tick(info.name) is not None:
+            _resolved_symbol_cache[symbol] = info.name
+            logger.info(
+                f"Resolved symbol '{symbol}' -> '{info.name}' (trade_mode={info.trade_mode}, "
+                f"broker lists: {[m.name for m in matches]})"
+            )
+            return info.name
 
-    candidates = [f"{clean_symbol}{s}" for s in suffixes]
-
-    # Pass 1: Look for candidate that is selectable, has a tick, and has trade_mode == FULL
-    full_mode = getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4)
-    for cand in candidates:
-        if mt5.symbol_select(cand, True):
-            info = mt5.symbol_info(cand)
-            if info and getattr(info, "trade_mode", 0) == full_mode:
-                tick = mt5.symbol_info_tick(cand)
-                if tick is not None:
-                    _resolved_symbol_cache[symbol] = cand
-                    logger.info(f"Resolved symbol '{symbol}' -> '{cand}' (trade_mode=FULL)")
-                    return cand
-
-    # Pass 2: Fallback to any candidate that is not disabled (trade_mode != 0) and has tick
-    disabled_mode = getattr(mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
-    for cand in candidates:
-        if mt5.symbol_select(cand, True):
-            info = mt5.symbol_info(cand)
-            if info and getattr(info, "trade_mode", 0) != disabled_mode:
-                tick = mt5.symbol_info_tick(cand)
-                if tick is not None:
-                    _resolved_symbol_cache[symbol] = cand
-                    logger.info(f"Resolved symbol '{symbol}' -> '{cand}' (trade_mode={getattr(info, 'trade_mode', None)})")
-                    return cand
-
-    # Pass 3: Fallback - any candidate with a tick
-    for cand in candidates:
-        if mt5.symbol_select(cand, True):
-            tick = mt5.symbol_info_tick(cand)
-            if tick is not None:
-                _resolved_symbol_cache[symbol] = cand
-                return cand
-
-    _resolved_symbol_cache[symbol] = symbol
+    logger.warning(f"No tradeable broker symbol found for '{symbol}' (broker lists: {[m.name for m in matches]})")
     return symbol
 
 
@@ -204,29 +247,28 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     # ── Final pre-execution sanity check ─────────────────────────────────────────
     # Fail fast with a clear message rather than sending garbage to MT5.
     if request.order_type == "buy":
-        if not (request.sl < tick.ask < request.tp):
+        if not (request.sl < tick.bid and tick.ask < request.tp):
             raise MT5TradeError(
                 f"Pre-execution sanity failed for BUY {symbol}: "
-                f"SL={request.sl} must be < Ask={tick.ask:.5f} must be < TP={request.tp}. "
-                f"Likely cause: SignalTrade sent SL/TP as pips instead of price levels."
+                f"SL={request.sl} must be < Bid={tick.bid:.5f} and Ask={tick.ask:.5f} must be < TP={request.tp}."
             )
     else:
-        if not (request.tp < tick.bid < request.sl):
+        if not (request.tp < tick.bid and tick.ask < request.sl):
             raise MT5TradeError(
                 f"Pre-execution sanity failed for SELL {symbol}: "
-                f"TP={request.tp} must be < Bid={tick.bid:.5f} must be < SL={request.sl}. "
-                f"Likely cause: SignalTrade sent SL/TP as pips instead of price levels."
+                f"TP={request.tp} must be < Bid={tick.bid:.5f} and Ask={tick.ask:.5f} must be < SL={request.sl}."
             )
 
     action_type = mt5.TRADE_ACTION_DEAL
     order_type = mt5.ORDER_TYPE_BUY if request.order_type == "buy" else mt5.ORDER_TYPE_SELL
     price = tick.ask if request.order_type == "buy" else tick.bid
-    order_type_filling = mt5.ORDER_FILLING_IOC
+    volume = _broker_volume(symbol, request.volume)
+    order_type_filling = _filling_mode(symbol)
 
     trade_request: dict[str, Any] = {
         "action": action_type,
         "symbol": symbol,
-        "volume": request.volume,
+        "volume": volume,
         "type": order_type,
         "price": price,
         "sl": request.sl,
@@ -239,7 +281,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
     }
 
     # Never send an order the account can't afford: the broker counts every "no money" rejection against us
-    needed = mt5.order_calc_margin(order_type, symbol, request.volume, price)
+    needed = mt5.order_calc_margin(order_type, symbol, volume, price)
     account = mt5.account_info()
     if needed is not None and account is not None and needed > account.margin_free:
         raise MT5TradeError(
@@ -247,7 +289,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         )
 
     logger.info(
-        f"Executing trade | symbol={symbol} volume={request.volume} "
+        f"Executing trade | symbol={symbol} volume={volume} "
         f"type={request.order_type} price={price} sl={request.sl} tp={request.tp} "
         f"comment={trade_request['comment']}"
     )
@@ -422,7 +464,7 @@ def get_dynamic_min_distance(symbol: str) -> float:
         Minimum distance in price units.
     """
     atr = get_atr(symbol)
-    clean_sym = symbol.split("-")[0].split(".")[0].upper()
+    clean_sym = canonical_symbol(symbol)
     multiplier = symbol_atr_multiplier.get(symbol, symbol_atr_multiplier.get(clean_sym, 1.0))
 
     if atr is not None:
@@ -681,9 +723,22 @@ def _restore_daily_state(today_str: str, is_past_start_time: bool) -> bool:
     return True
 
 
+def _money_divisor() -> float:
+    """
+    How many of the account's money units make one real unit: 100 on a cent account, otherwise 1.
+    MT5 reports a cent account in cents, so without this a $5 limit would trigger at 5 real cents.
+    An account whose lots are shrunk by contract size instead reports real dollars and needs no conversion.
+    """
+    mode = get_settings().cent_account.strip().lower()
+    if mode in ("true", "false"):
+        return 100.0 if mode == "true" else 1.0
+    currency = str(getattr(mt5.account_info(), "currency", "")).upper()
+    return 100.0 if currency in _CENT_CURRENCIES else 1.0
+
+
 def _get_account_info() -> dict | None:
     """
-    Pull live account metrics from MT5.
+    Pull live account metrics from MT5, in real money even on a cent account.
     Returns None if MT5 is unavailable or disconnected.
     """
     settings = get_settings()
@@ -699,11 +754,12 @@ def _get_account_info() -> dict | None:
     if info is None:
         logger.error("Failed to fetch MT5 account info")
         return None
+    divisor = _money_divisor()
     return {
-        "balance": info.balance,
-        "equity": info.equity,
-        "margin": info.margin,
-        "free_margin": info.margin_free,
+        "balance": info.balance / divisor,
+        "equity": info.equity / divisor,
+        "margin": info.margin / divisor,
+        "free_margin": info.margin_free / divisor,
     }
 
 
@@ -957,7 +1013,7 @@ def _get_today_closed_profit() -> float:
         return 0.0
 
     # DEAL_ENTRY_OUT (1) = closing deals only (excludes entries/deposits/withdrawals)
-    closed_profit = sum(d.profit for d in deals if d.entry == mt5.DEAL_ENTRY_OUT)
+    closed_profit = sum(d.profit for d in deals if d.entry == mt5.DEAL_ENTRY_OUT) / _money_divisor()
     return round(closed_profit, 2)
 
 
@@ -1265,7 +1321,9 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
     Returns:
         True if the position was closed successfully, False otherwise.
     """
-    resolved_sym = resolve_symbol(symbol)
+    # The position's own symbol, not a fresh resolve: it may sit on a sibling such as plain XAUUSD
+    position = mt5.positions_get(ticket=position_ticket)
+    resolved_sym = position[0].symbol if position else resolve_symbol(symbol)
     tick = mt5.symbol_info_tick(resolved_sym)
     if tick is None:
         logger.error(f"Cannot close position {position_ticket}: no tick data for {symbol} (resolved: {resolved_sym})")
@@ -1290,7 +1348,7 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
         "magic": get_settings().magic_number,
         "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _filling_mode(resolved_sym),
     }
 
     logger.info(

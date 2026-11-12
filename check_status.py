@@ -49,20 +49,20 @@ def main() -> None:
         if info:
             total_m = info["margin"] + info["free_margin"]
             m_pct = (info["margin"] / total_m * 100) if total_m > 0 else 0.0
-            print(f"  Start Balance  : {start_bal:.2f} USC")
-            print(f"  Current Balance: {info['balance']:.2f} USC | Equity: {info['equity']:.2f} USC")
+            print(f"  Start Balance  : {start_bal:.2f}")
+            print(f"  Current Balance: {info['balance']:.2f} | Equity: {info['equity']:.2f}")
             print(f"  Margin Usage   : {m_pct:.2f}% (Limit: 40.00%) -> {'OK' if margin_ok else 'BLOCKED'}")
         print("-" * 60)
         print(
-            f"  Daily Profit   : {closed_pnl:+.2f} USC / {effective_profit_target:.2f} USC target "
+            f"  Daily Profit   : {closed_pnl:+.2f} / {effective_profit_target:.2f} target "
             f"(USD cap: {s.daily_profit_target_usd:.2f}, {s.daily_profit_target_pct*100:.2f}% cap: {target_pct_val:.2f})"
         )
         if pt_ok:
-            print(f"  Profit Status  : NOT REACHED ({remaining_to_target:.2f} USC more to hit daily target)")
+            print(f"  Profit Status  : NOT REACHED ({remaining_to_target:.2f} more to hit daily target)")
         else:
             print("  Profit Status  : TARGET REACHED (Trading paused for today)")
         print("-" * 60)
-        print(f"  Daily Drawdown : {current_loss:.2f} USC / {allowed_loss:.2f} USC limit -> {'OK' if dd_ok else 'HIT (Paused)'}")
+        print(f"  Daily Drawdown : {current_loss:.2f} / {allowed_loss:.2f} limit -> {'OK' if dd_ok else 'HIT (Paused)'}")
         print(f"  Open Positions : {pos_count}")
         print("=" * 60)
     finally:
