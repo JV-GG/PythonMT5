@@ -45,6 +45,7 @@ PAIR_DISPLAY_TO_MT5: dict[str, str] = {
     "AUD/USD": "AUDUSD",
     "BTC/USD": "BTCUSD",
     "XAU/USD": "XAUUSD",
+    "XAG/USD": "XAGUSD",
 }
 
 # JPY pairs trade in 0.01 increments (1 pip = 0.01); non-JPY in 0.0001 (1 pip = 0.0001).
@@ -77,6 +78,8 @@ def _correct_levels_from_pips(
         pip = 1.0
     elif symbol == "XAUUSD":
         pip = 0.1  # 1 Gold pip = $0.10
+    elif symbol == "XAGUSD":
+        pip = 0.01  # 1 Silver pip = $0.01
     else:
         pip = 0.01 if symbol in _JPY_PAIRS else 0.0001
     sl_dist_pips = round(abs(sl) / pip)
@@ -760,8 +763,10 @@ async def _watcher_loop() -> None:
     interval = settings.signaltrade_poll_interval
     tracked_symbols = [s for s in SIGNALTRADE_PAIR_CODES if s in settings.allowed_symbols]
 
+    broker_symbols = {s: resolve_symbol(s) for s in tracked_symbols}
+
     logger.info(
-        f"Signal watcher started — polling every {interval}s for symbols: {tracked_symbols}"
+        f"Signal watcher started — polling every {interval}s for symbols: {broker_symbols}"
     )
 
     async with httpx.AsyncClient() as client:

@@ -22,7 +22,7 @@ try:
 except ImportError:
     mt5 = None
 
-from config import get_settings
+from config import canonical_symbol, get_settings
 from schemas import PHASE_INITIAL, PHASE_PARTIAL_LOCK, PHASE_TP1_HIT, TradeInfo
 from mt5_service import active_trades, close_position, log_event, modify_position_sl_tp, unregister_trade, save_active_trades
 import news_guard
@@ -196,12 +196,7 @@ def _is_valid_tp(symbol: str, direction: str, tp: float) -> bool:
 
 def _get_clean_symbol(symbol: str) -> str:
     """Strip broker suffixes like -STD, .std, etc."""
-    clean = symbol.upper()
-    for s in ["-STD", ".STD", ".A", ".M", ".CRP", "-S"]:
-        if clean.endswith(s):
-            clean = clean[:-len(s)]
-            break
-    return clean
+    return canonical_symbol(symbol)
 
 
 def _get_pip_size(symbol: str) -> float:
@@ -211,6 +206,8 @@ def _get_pip_size(symbol: str) -> float:
         return 1.0
     elif clean == "XAUUSD":
         return 0.1
+    elif clean == "XAGUSD":
+        return 0.01
     elif clean in _JPY_PAIRS or "JPY" in clean:
         return 0.01
     else:
