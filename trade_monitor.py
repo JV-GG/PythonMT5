@@ -2,7 +2,7 @@
 Trade Monitor — watches open MT5 positions and applies adaptive TP/SL trailing.
 
 Phase 1 (initial): Normal trade with initial SL and TP1. Waits for Phase 2 trigger.
-Phase 2 (trailing): Triggered when price approaches TP1 by monitor_tp1_proximity.
+Phase 2 (trailing): Triggered when price is within monitor_tp1_proximity_pct of the TP1 distance from TP1.
   - TP moves to TP2 (if set), then continues trailing upward (BUY) or downward (SELL).
   - SL moves upward only (BUY) or downward only (SELL), locking in profit.
   - Once triggered, SL and TP both follow price — never reverse.
@@ -231,19 +231,6 @@ def _m1_atr(symbol: str, period: int) -> float:
     return float(sum(true_ranges) / len(true_ranges))
 
 
-def _is_price_near_tp1(symbol: str, direction: str, tp1: float, proximity_pips: float) -> bool:
-    """Return True if the current market price is within `proximity_pips` pips of TP1."""
-    tick = _get_tick(symbol)
-    if tick is None:
-        return False
-    
-    pip_size = _get_pip_size(symbol)
-    proximity_price = proximity_pips * pip_size
-    
-    price = tick["ask"] if direction == "buy" else tick["bid"]
-    return abs(price - tp1) <= proximity_price
-
-
 # ── Position processing ──────────────────────────────────────────────────────
 
 _JPY_PAIRS = {"USDJPY", "GBPJPY", "EURJPY", "AUDJPY", "CADJPY", "CHFJPY"}
@@ -274,7 +261,7 @@ def _process_one_position(pos: dict) -> None:
     if pos.get("price_open", 0.0) > 0 and (trade.entry_price <= 0 or abs(trade.entry_price - pos["price_open"]) > 1e-7):
         logger.info(
             f"[{ticket}] {symbol} {direction.upper()} | Syncing entry_price {trade.entry_price} -> {pos['price_open']} from MT5 position"
-        )
+       )
         trade.entry_price = float(pos["price_open"])
         save_active_trades()
 
@@ -299,7 +286,7 @@ def _process_one_position(pos: dict) -> None:
                 logger.info(
                     f"[{ticket}] {symbol} {direction.upper()} | ATR(M1) {trade.atr:.5f} -> SL kept at least "
                     f"{settings.noise_floor_atr_mult * trade.atr:.5f} from price"
-                )
+               )
         noise_gap = settings.noise_floor_atr_mult * trade.atr
 
     def floor(target_sl: float) -> float:
@@ -397,7 +384,7 @@ def _process_one_position(pos: dict) -> None:
 
     if phase == PHASE_PARTIAL_LOCK:
         move_to_tp1 = abs(tp1 - entry)
-        near_tp1 = _is_price_near_tp1(symbol, direction, tp1, settings.monitor_tp1_proximity)
+        near_tp1 = abs(tp1 - price) <= move_to_tp1 * settings.monitor_tp1_proximity_pct
         hit_tp1 = (price >= tp1) if is_buy else (price <= tp1)
         
         if near_tp1 or hit_tp1:
@@ -444,12 +431,15 @@ def _process_one_position(pos: dict) -> None:
                 new_sl = tp1
         new_sl = floor(new_sl)
 
-        # Trail TP
+        # Trail TP one step ahead of price, but only once price is within half a step of it. Moving it on every tick
+        # sent a modify request almost every poll (5,737 of 6,612 in the VPS logs); a 12-month gold replay gives the
+        # same profit either way. Keeping it fixed at TP2 instead cost profit in the same replay.
         if trade.tp2 is not None:
             tp_distance = abs(trade.tp2 - tp1)
         else:
             tp_distance = abs(tp1 - entry)
-        new_tp = (price + tp_distance) if is_buy else (price - tp_distance)
+        room = (current_tp - price) if is_buy else (price - current_tp)
+        new_tp = ((price + tp_distance) if is_buy else (price - tp_distance)) if room < tp_distance * 0.5 else current_tp
 
         success, applied_sl, applied_tp = _modify_position(ticket, symbol, direction, new_sl, new_tp, current_sl, current_tp, stage="tp1_trail", price=price)
         if success:
@@ -528,12 +518,12 @@ def _modify_position(
             log_event(
                 "sl_move", order_id=ticket, symbol=symbol, direction=direction, stage=stage, price=price,
                 old_sl=current_sl, new_sl=req_sl, target_sl=target_sl, old_tp=current_tp, new_tp=req_tp,
-            )
+           )
             if abs(req_sl - target_sl) > (1.0 * point):
                 logger.debug(
                     f"[{ticket}] {symbol} {direction.upper()} | Resilient Profit Lock | Target SL {target_sl:.{digits}f} clamped to safe level {req_sl:.{digits}f} "
                     f"due to price proximity (MT5 position updated successfully)."
-                )
+               )
             return True, req_sl, req_tp
 
         # Retcode 10016: Invalid Stops -> Retry with extra spread buffer
@@ -543,7 +533,7 @@ def _modify_position(
             logger.warning(
                 f"[{ticket}] {symbol} {direction.upper()} | MT5 rejected sl={req_sl:.{digits}f} at {m_price_str} (Invalid Stops 10016) | "
                 f"attempt {attempt}/3 -> calculating safe fallback..."
-            )
+           )
             if tick and sym_info:
                 stops_level = sym_info.trade_stops_level
                 pip_size = _get_pip_size(symbol)
@@ -571,7 +561,7 @@ def _modify_position(
             log = logger.debug if result.retcode == 10025 else logger.warning
             log(
                 f"[{ticket}] {symbol} {direction.upper()} | Modify position failed — retcode={result.retcode} ({result.comment})"
-            )
+           )
             break
 
     return False, current_sl, current_tp
@@ -650,17 +640,30 @@ def _sync_closed_positions(open_tickets: set[int]) -> None:
 
     stale = [tid for tid in active_trades if tid not in open_tickets]
     for tid in stale:
-        _log_trade_close(tid)
+        # MT5 can take a few cycles to show the closing deal (seen on news / flip closes): retry before giving up
+        tries = _close_tries.get(tid, 0)
+        if not _log_trade_close(tid, final=tries >= CLOSE_LOG_TRIES):
+            _close_tries[tid] = tries + 1
+            continue
+        _close_tries.pop(tid, None)
         unregister_trade(tid)
+
+
+_close_tries: dict[int, int] = {}
+CLOSE_LOG_TRIES = 20  # monitor cycles (~10 s) to wait for the closing deal
 
 
 _DEAL_REASONS = {0: "client", 1: "mobile", 2: "web", 3: "bot", 4: "SL", 5: "TP", 6: "stop_out"}
 
 
-def _log_trade_close(ticket: int) -> None:
-    """Log how a position closed (exit price, reason, profit) using MT5 deal history. Never raises."""
+def _log_trade_close(ticket: int, final: bool = True) -> bool:
+    """
+    Log how a position closed (exit price, reason, profit) using MT5 deal history. Never raises.
+    False when the closing deal isn't in the history yet and `final` is False (nothing logged, try again later).
+    """
     trade = active_trades.get(ticket)
     detail = ""
+    logged = False
     try:
         deals = (mt5.history_deals_get(position=ticket) or []) if mt5 is not None else []
         outs = [d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT]
@@ -677,16 +680,20 @@ def _log_trade_close(ticket: int) -> None:
             detail = (
                 f" | {trade.symbol} {trade.direction.upper()} entry={trade.entry_price} exit={exit_price} "
                 f"reason={reason} profit={profit:.2f} move={move:.5f} last_phase={trade.phase}{held}"
-            )
+           )
             log_event(
                 "trade_close", order_id=ticket, symbol=trade.symbol, direction=trade.direction,
                 entry_price=trade.entry_price, exit_price=exit_price, reason=reason, profit=round(profit, 2),
                 move=move, last_phase=trade.phase, final_sl=trade.current_sl, initial_sl=trade.initial_sl,
                 tp1=trade.initial_tp1, tp2=trade.tp2, held_minutes=round(held_min, 2) if held_min is not None else None,
-            )
+           )
+            logged = True
     except Exception:
         logger.debug(f"[{ticket}] Could not read close details from MT5", exc_info=True)
+    if not logged and not final:
+        return False
     logger.info(f"[{ticket}] Removed from monitor — position closed{detail}")
+    return True
 
 
 _monitor_task: asyncio.Task | None = None

@@ -116,6 +116,9 @@ _last_executed_signal: dict[str, str] = {}
 _last_executed_time: dict[str, float] = {}
 
 
+MIN_CONFIDENCE = 30  # signals below this confidence are skipped
+
+
 def _is_confidence_acceptable(
     confidence: float,
     signal_data: dict[str, Any],
@@ -129,8 +132,8 @@ def _is_confidence_acceptable(
     session_info = signal_data.get("sessionInfo") or {}
     session_name = session_info.get("name", "Active session")
 
-    confirmed_floor = 20
-    potential_floor = 20
+    confirmed_floor = MIN_CONFIDENCE
+    potential_floor = MIN_CONFIDENCE
 
     if confidence >= confirmed_floor:
         return True, f"{session_name} — confirmed, confidence {confidence}% >= {confirmed_floor}%"
@@ -265,12 +268,6 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
             )
             return None
 
-    symbol_vol_attr = f"{mt5_symbol.lower()}_volume"
-    if hasattr(settings, symbol_vol_attr):
-        volume = getattr(settings, symbol_vol_attr)
-    else:
-        volume = settings.default_volume
-
     if mt5_symbol == "XAUUSD":
         from datetime import timezone as dt_timezone, timedelta as dt_timedelta
         malaysia_tz = dt_timezone(dt_timedelta(hours=8))
@@ -303,8 +300,6 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
                 f"(Current day: {current_day_name.capitalize()} in Malaysia Time)."
             )
             return None
-
-        volume = settings.xauusd_weekday_volume
 
     # ── SL/TP reduction ──────────────────────────────────────────────────
     # Pull TP closer to entry by tp_reduction_pct: a BUY opens at the ask but its TP triggers on the bid, so the
@@ -364,7 +359,6 @@ def _transform_signal(signal_data: dict[str, Any]) -> TradeRequest | None:
 
     return TradeRequest(
         symbol=mt5_symbol,
-        volume=volume,
         order_type=resolved_direction,
         sl=sl,
         tp=tp1_value,
@@ -544,6 +538,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
         if raw_fingerprint == _last_executed_signal.get(pair_display) and time_elapsed < COOLDOWN_PERIOD:
             _last_signals[pair_display] = timestamp
+            log_event("signal", pair=pair_display, direction=raw_direction.lower(), confidence=confidence,
+                      signal_id=str(timestamp), outcome="blocked", reason="cooldown")
             logger.debug(
                 f"Signal skipped (same signal already executed within {COOLDOWN_PERIOD/60:.0f} mins) for {pair_display} | "
                 f"fingerprint={raw_fingerprint}"
@@ -559,7 +555,7 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
         if trade_req is None:
             # If the signal went neutral or below the floor, clear the last executed fingerprint
             # so that when a new signal comes in later, it can trigger a trade.
-            if raw_direction not in ("BUY", "SELL") or confidence < 20:
+            if raw_direction not in ("BUY", "SELL") or confidence < MIN_CONFIDENCE:
                 _last_executed_signal[pair_display] = ""
             _last_signals[pair_display] = timestamp
             continue
@@ -621,6 +617,24 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                         f"position {pos.ticket} float | profit={pos.profit:.2f}"
                     )
 
+        # Minimum Remaining TP Distance filter (Risk:Reward Guard). Checked against the signal's own entry / TP1 before
+        # re-anchoring: measured after it, from the price the levels were just moved to, the remainder is always 100%.
+        tp1_target = trade_req.tp1 or trade_req.tp
+        if signal_entry is not None and tp1_target is not None:
+            tp_ok, tp_ratio = is_tp_distance_safe(
+                symbol=trade_req.symbol,
+                direction=trade_req.order_type,
+                signal_entry=float(signal_entry),
+                signal_tp1=tp1_target,
+            )
+            if not tp_ok:
+                logger.warning(
+                    f"Trade blocked (Insufficient TP distance) for {pair_display} | "
+                    f"direction={trade_req.order_type}"
+                )
+                _signal_outcome(signal_event, "blocked", "tp_distance", tp1_remaining_ratio=tp_ratio)
+                continue
+
         # ── Re-anchor levels to the broker's price ───────────────────────
         # Keep the signal's SL/TP distances but measure them from where this broker will actually fill.
         if settings.anchor_levels_to_market and signal_entry and mt5 and not settings.dry_run:
@@ -678,23 +692,6 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             )
             _signal_outcome(signal_event, "blocked", "daily_profit_target")
             continue
-
-        # Minimum Remaining TP Distance filter (Risk:Reward Guard)
-        tp1_target = trade_req.tp1 or trade_req.tp
-        if signal_entry is not None and tp1_target is not None:
-            tp_ok, tp_ratio = is_tp_distance_safe(
-                symbol=trade_req.symbol,
-                direction=trade_req.order_type,
-                signal_entry=float(signal_entry),
-                signal_tp1=tp1_target,
-            )
-            if not tp_ok:
-                logger.warning(
-                    f"Trade blocked (Insufficient TP distance) for {pair_display} | "
-                    f"direction={trade_req.order_type}"
-                )
-                _signal_outcome(signal_event, "blocked", "tp_distance", tp1_remaining_ratio=tp_ratio)
-                continue
 
         # Spacing filter
         if signal_entry is not None:

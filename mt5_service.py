@@ -997,9 +997,11 @@ def _get_today_closed_profit() -> float:
         local_session_start -= timedelta(days=1)
 
     # Calculate MT5 server time offset dynamically
-    tick = mt5.symbol_info_tick(resolve_symbol("EURUSD"))
-    if tick and tick.time > 0:
-        server_now = datetime.fromtimestamp(tick.time)
+    # Newest tick of any traded symbol: on weekends EURUSD's last tick is Friday's, which put "today" a day or more back
+    ticks = [mt5.symbol_info_tick(resolve_symbol(s)) for s in ("EURUSD", *settings.allowed_symbols)]
+    newest = max((t.time for t in ticks if t), default=0)
+    if newest > 0:
+        server_now = datetime.fromtimestamp(newest)
         time_diff = server_now - local_now
     else:
         time_diff = timedelta(0)
