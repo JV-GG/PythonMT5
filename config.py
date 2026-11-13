@@ -84,7 +84,9 @@ class Settings(BaseSettings):
     monitor_poll_interval: float = 1.0  # seconds between each monitor cycle
     modify_min_interval_s: float = 3.0  # min seconds between SL/TP modify requests per position (broker rate limit)
     open_reject_cooldown_s: float = 300.0  # after the broker rejects an open, don't try that pair again for this long
-    monitor_tp1_proximity: float = 5.0  # how close price must be to TP1 to trigger Phase 2 (in pips, e.g. 5.0)
+    # Phase 2 starts this close to TP1, as a share of the entry-to-TP1 distance. A fixed 5 pips fired at 62-73% of the
+    # way on every symbol in the VPS logs (on forex 5 pips is more than the whole TP1 distance).
+    monitor_tp1_proximity_pct: float = 0.10
 
     # Adaptive SL/TP Customization
     early_risk_reduction_enabled: bool = True
