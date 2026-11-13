@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Trading
-    allowed_symbols: str | list[str] = ["XAUUSD", "BTCUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY"]
+    allowed_symbols: str | list[str] = ["XAUUSD", "BTCUSD", "XAGUSD"]
     default_volume: float = 0.01          # default trade volume in lots
     cent_account: str = "auto"            # auto reads the account currency (USC...); true/false for brokers that show cents as USD
     eurusd_volume: float = 0.01           # lot size for EURUSD
