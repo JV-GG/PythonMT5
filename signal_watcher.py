@@ -538,7 +538,9 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
 
     for pair_code in SIGNALTRADE_PAIR_CODES:
         if portal is not None:
-            # The server decides the account's pairs (admin-enabled ∩ plan ∩ ticked); empty until the first token
+            # The user picks pairs in ALLOWED_SYMBOLS (settings file); the server still blocks any not in the plan
+            if pair_code not in settings.allowed_symbols:
+                continue
             if portal.allowed_mt5 and pair_code not in portal.allowed_mt5:
                 continue
             data = (batch or {}).get(pair_code)
