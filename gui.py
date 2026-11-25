@@ -1,17 +1,18 @@
 """
 Beyond Signal Bot — desktop app (customer build, Windows).
 
-A clean window instead of a console: the customer connects their Beyond Signal account, types their
-MetaTrader 5 login, ticks the pairs to trade and clicks Start. No files to edit, no terminal, no code.
+A clean window instead of a console: the customer connects their Beyond Signal account, picks the pairs
+to trade and clicks Start. No files to edit, no terminal, no code.
 
 This is the PyInstaller entry point for customer builds (see customer/BUILD_WINDOWS.md). The server-side
 bot still runs through main.py. Trading rules, lot limits and the signal feed all come from the Beyond
-Signal server; the customer only chooses account, lot and pairs.
+Signal server; the customer only chooses lot and pairs.
 
-UI: CustomTkinter (modern, rounded widgets). Widgets are touched only on the main thread. Background work
-(linking, connecting, the trading loop) runs in worker threads and marshals UI updates back with
-root.after(0, ...). Every log line from the trading modules is captured by a logging handler and shown
-in the activity panel.
+Layout: two columns — controls on the left, a live activity log on the right. Unlink lives on a Settings
+page (gear in the header). CustomTkinter (modern, rounded widgets). Widgets are touched only on the main
+thread. Background work (linking, connecting, the trading loop) runs in worker threads / the engine loop
+and marshals UI updates back with root.after(0, ...). Every log line from the trading modules is captured
+by a logging handler and shown in the activity panel.
 """
 from __future__ import annotations
 
@@ -47,18 +48,37 @@ from settings_store import clamp_lot, load_settings, pairs_to_trade, save_settin
 SERVER_URL = os.environ.get("SIGNALTRADE_URL", "https://signal.beyond-signal.net").rstrip("/")
 LINK_TIMEOUT_S = 600
 
-# Brand palette (light look)
-TEAL = "#0f9488"
-TEAL_HOVER = "#0b857a"
-TEAL_BADGE = "#1fa99c"
-TEAL_SOFT = "#e4f5f1"
-TEAL_INK = "#0b5a53"
-GREEN = "#0e9f6e"
-AMBER = "#b45309"
-MUTED = "#5c6c73"
-CARD = "#ffffff"
-CARD_BORDER = "#e6ecee"
-PAGE = "#eef2f3"
+# ── Refined light palette (colour goes on data/action, not chrome) ───────────────
+GROUND = "#f4f6f6"       # window background
+SURFACE = "#ffffff"      # cards
+EDGE = "#e7eaec"         # card border
+RULE = "#eef1f2"         # inner divider
+INK = "#16221f"          # primary text
+MUTED = "#5c6b70"        # secondary text
+FAINT = "#6b797e"        # tertiary text
+
+TEAL = "#0e857a"
+TEAL_HOVER = "#0b6b62"
+TEAL_INK = "#0b6b62"
+TEAL_TINT = "#eaf5f2"
+TEAL_EDGE = "#cfe6e0"
+
+POS_BG = "#e4f4ea"       # connected pill
+POS_INK = "#15603a"
+WARN_BG = "#fdf4e2"      # not-connected pill / risk note
+WARN_EDGE = "#f0dcae"
+WARN_INK = "#8a5a12"
+NEUTRAL_BG = "#eef1f2"   # version pill
+NEUTRAL_INK = "#46555a"
+NEG_EDGE = "#eecbc6"     # unlink button
+NEG_INK = "#a93423"
+GREEN = "#15834f"
+STOP_RED = "#b91c1c"
+STOP_RED_HOVER = "#991b1b"
+
+TERM = "#0e1113"         # activity log panel
+TERM_EDGE = "#0a0d0e"
+TERM_INK = "#aeb9bc"
 
 
 class BotApp:
@@ -73,7 +93,6 @@ class BotApp:
         self.pair_widgets: list[ctk.CTkCheckBox] = []
         self._pair_imgs: list[ctk.CTkImage] = []
         self.entries: list[ctk.CTkEntry] = []
-        self._link = None  # (code, poll_secret) while a link is in progress
 
         # The trading engine (signal watcher + trade monitor) is asyncio-based and needs a LIVE
         # event loop. A Tk GUI has none, so we run one in a background thread for the engine.
@@ -83,9 +102,9 @@ class BotApp:
         threading.Thread(target=self._run_loop, daemon=True).start()
 
         root.title("Beyond Signal Bot")
-        root.geometry("470x790")
-        root.minsize(430, 620)
-        root.configure(fg_color=PAGE)
+        root.geometry("940x628")
+        root.minsize(880, 560)
+        root.configure(fg_color=GROUND)
 
         self._build()
         self._attach_logging()
@@ -97,97 +116,212 @@ class BotApp:
 
     # ── UI ───────────────────────────────────────────────────────────────────
     def _build(self) -> None:
-        # Header (always on top)
-        head = ctk.CTkFrame(self.root, corner_radius=0, fg_color=TEAL, height=74)
+        self._build_header()
+
+        # One container holds either the main two-column view or the settings page.
+        self.main_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        self.main_frame.pack(side="top", fill="both", expand=True)
+        self._build_main(self.main_frame)
+
+        self.settings_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        self._build_settings(self.settings_frame)
+
+    def _build_header(self) -> None:
+        head = ctk.CTkFrame(self.root, corner_radius=0, fg_color=SURFACE, height=68,
+                            border_width=0)
         head.pack(side="top", fill="x")
         hin = ctk.CTkFrame(head, fg_color="transparent")
-        hin.pack(fill="x", padx=18, pady=14)
-        ctk.CTkLabel(hin, text="🤖", width=38, height=38, corner_radius=11, fg_color=TEAL_BADGE,
-                     text_color="white", font=ctk.CTkFont(size=18)).pack(side="left")
+        hin.pack(fill="x", padx=18, pady=12)
+        ctk.CTkLabel(hin, text="🤖", width=40, height=40, corner_radius=11, fg_color=TEAL,
+                     text_color="white", font=ctk.CTkFont(size=19)).pack(side="left")
         tf = ctk.CTkFrame(hin, fg_color="transparent")
         tf.pack(side="left", padx=(12, 0))
-        ctk.CTkLabel(tf, text="Beyond Signal Bot", text_color="white",
+        ctk.CTkLabel(tf, text="Beyond Signal Bot", text_color=INK,
                      font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(tf, text="Trading your signals, hands-off", text_color="#d9f3ee",
+        ctk.CTkLabel(tf, text="Trading your signals, hands-off", text_color=MUTED,
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
-        ctk.CTkLabel(hin, text=f"v{CLIENT_VERSION}", text_color="white", fg_color=TEAL_BADGE, corner_radius=8,
-                     width=52, height=24, font=ctk.CTkFont(size=12, weight="bold")).pack(side="right")
 
-        # Bottom action bar: Start/Stop + status (pinned — never scrolls off)
-        bar = ctk.CTkFrame(self.root, corner_radius=0, fg_color=CARD, border_width=1, border_color=CARD_BORDER)
-        bar.pack(side="bottom", fill="x")
-        barin = ctk.CTkFrame(bar, fg_color="transparent")
-        barin.pack(fill="x", padx=18, pady=(14, 16))
-        self.start_btn = ctk.CTkButton(barin, text="▶  Start trading", command=self._on_start,
-                                       height=46, corner_radius=12, fg_color=TEAL, hover_color=TEAL_HOVER,
-                                       text_color="white", font=ctk.CTkFont(size=15, weight="bold"))
-        self.start_btn.pack(fill="x")
-        self.status_label = ctk.CTkLabel(barin, text="Stopped", text_color=MUTED,
-                                         font=ctk.CTkFont(size=12, weight="bold"), anchor="w")
-        self.status_label.pack(anchor="w", pady=(8, 0))
+        # right side: settings gear · version pill · status pill
+        self.gear_btn = ctk.CTkButton(hin, text="⚙", width=36, height=32, corner_radius=9,
+                                      fg_color="transparent", hover_color=NEUTRAL_BG, text_color=MUTED,
+                                      border_width=1, border_color=EDGE,
+                                      font=ctk.CTkFont(size=16), command=self._show_settings)
+        self.gear_btn.pack(side="right", padx=(10, 0))
+        ctk.CTkLabel(hin, text=f"v{CLIENT_VERSION}", text_color=NEUTRAL_INK, fg_color=NEUTRAL_BG,
+                     corner_radius=8, width=50, height=24,
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=(10, 0))
+        self.conn_pill = ctk.CTkLabel(hin, text="Not connected", text_color=WARN_INK, fg_color=WARN_BG,
+                                      corner_radius=8, height=26, font=ctk.CTkFont(size=12, weight="bold"))
+        self.conn_pill.pack(side="right", padx=(10, 0), ipadx=9)
 
-        # Activity log (fixed height, above the bar — stays visible)
-        logwrap = ctk.CTkFrame(self.root, fg_color="transparent")
-        logwrap.pack(side="bottom", fill="x", padx=16, pady=(0, 10))
-        self.log = ctk.CTkTextbox(logwrap, height=104, corner_radius=11, fg_color="#0a1416",
-                                  text_color="#8fe9db", border_width=1, border_color=CARD_BORDER,
-                                  font=ctk.CTkFont(family="Consolas", size=11), wrap="word")
-        self.log.pack(fill="x")
-        self.log.configure(state="disabled")
+    def _set_conn_pill(self, state: str) -> None:
+        if state == "running":
+            self.conn_pill.configure(text="● Trading", text_color=POS_INK, fg_color=POS_BG)
+        elif state == "linked":
+            self.conn_pill.configure(text="● Connected", text_color=POS_INK, fg_color=POS_BG)
+        else:
+            self.conn_pill.configure(text="Not connected", text_color=WARN_INK, fg_color=WARN_BG)
 
-        # Scrollable middle (sections 1–3)
-        body = ctk.CTkScrollableFrame(self.root, fg_color="transparent")
-        body.pack(side="top", fill="both", expand=True, padx=2, pady=(10, 0))
+    def _build_main(self, parent) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=0, minsize=306)
+        parent.rowconfigure(0, weight=1)
 
-        # 1 · account link
-        b1 = self._card(body, "1", "Beyond Signal account")
-        self.link_status = ctk.CTkLabel(b1, text="", wraplength=360, justify="left", anchor="w",
-                                        font=ctk.CTkFont(size=13))
+        # LEFT: scrollable cards + pinned Start button
+        left = ctk.CTkFrame(parent, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=12)
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(0, weight=1)
+
+        cards = ctk.CTkScrollableFrame(left, fg_color="transparent")
+        cards.grid(row=0, column=0, sticky="nsew")
+        cards.columnconfigure(0, weight=1)
+
+        # Connect / account card
+        b1 = self._card(cards, "Beyond Signal account")
+        self.link_status = ctk.CTkLabel(b1, text="", wraplength=440, justify="left", anchor="w",
+                                        text_color=MUTED, font=ctk.CTkFont(size=13))
         self.link_status.pack(fill="x")
-        self.code_label = ctk.CTkLabel(b1, text="", text_color=TEAL,
-                                       font=ctk.CTkFont(family="Consolas", size=22, weight="bold"))
+        self.code_row = ctk.CTkFrame(b1, fg_color=TEAL_TINT, corner_radius=12,
+                                     border_width=1, border_color=TEAL_EDGE)
+        self.code_label = ctk.CTkLabel(self.code_row, text="", text_color=TEAL_INK,
+                                       font=ctk.CTkFont(family="Consolas", size=24, weight="bold"))
+        self.code_label.pack(side="left", padx=(16, 10), pady=10)
+        self.copy_btn = ctk.CTkButton(self.code_row, text="Copy", width=66, height=32, corner_radius=8,
+                                      fg_color=SURFACE, hover_color=TEAL_TINT, text_color=TEAL_INK,
+                                      border_width=1, border_color=TEAL_EDGE,
+                                      font=ctk.CTkFont(size=12, weight="bold"), command=self._copy_code)
+        self.copy_btn.pack(side="left", padx=(0, 12), pady=10)
         self.link_btn = ctk.CTkButton(b1, text="Connect account", command=self._on_connect,
                                       height=38, corner_radius=10, fg_color=TEAL, hover_color=TEAL_HOVER,
                                       text_color="white", font=ctk.CTkFont(size=13, weight="bold"))
-        self.link_btn.pack(anchor="w", pady=(10, 0))
+        self.link_btn.pack(anchor="w", pady=(12, 0))
 
-        # 2 · trade settings (the bot uses whatever account you're logged into in MT5 — no login needed)
-        b2 = self._card(body, "2", "Trade settings")
+        # Trade settings card
+        b2 = self._card(cards, "Trade settings")
         self.var_lot = tk.StringVar(value="0.01")
         ctk.CTkLabel(b2, text="The bot trades the account you're signed into in MetaTrader 5. "
-                             "Just open MT5 and log in — no account number or password needed here.",
-                     wraplength=360, justify="left", anchor="w", text_color=MUTED,
+                             "Open MT5 and log in — no account number or password needed here.",
+                     wraplength=440, justify="left", anchor="w", text_color=MUTED,
                      font=ctk.CTkFont(size=12)).pack(fill="x", pady=(0, 4))
         self._field(b2, "Lot size per trade (0.01–1.00)", self.var_lot, full=False)
+        note = ctk.CTkFrame(b2, fg_color=WARN_BG, corner_radius=9, border_width=1, border_color=WARN_EDGE)
+        note.pack(fill="x", pady=(10, 0))
+        ctk.CTkLabel(note, text="⚠  Keep risk small. With about $1,000 equity, stay at or below 0.05 lots "
+                               "— larger sizes can lose fast.",
+                     wraplength=430, justify="left", anchor="w", text_color=WARN_INK,
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(fill="x", padx=11, pady=8)
 
-        # 3 · pairs
-        b3 = self._card(body, "3", "Pairs to trade")
+        # Pairs card
+        b3 = self._card(cards, "Pairs to trade")
         ptop = ctk.CTkFrame(b3, fg_color="transparent")
         ptop.pack(fill="x")
         self.pairs_hint = ctk.CTkLabel(ptop, text="Connect your account to see the pairs your plan allows.",
-                                       wraplength=240, justify="left", anchor="w", text_color=MUTED,
+                                       wraplength=300, justify="left", anchor="w", text_color=MUTED,
                                        font=ctk.CTkFont(size=12))
         self.pairs_hint.pack(side="left", fill="x", expand=True)
         self.sel_all_btn = ctk.CTkButton(ptop, text="Select all", width=80, height=30, corner_radius=9,
                                          fg_color=TEAL, hover_color=TEAL_HOVER, text_color="white",
                                          font=ctk.CTkFont(size=12, weight="bold"), command=self._select_all)
         self.clr_all_btn = ctk.CTkButton(ptop, text="Clear all", width=78, height=30, corner_radius=9,
-                                         fg_color="transparent", hover_color=TEAL_SOFT, text_color=TEAL_INK,
+                                         fg_color="transparent", hover_color=TEAL_TINT, text_color=TEAL_INK,
                                          border_width=1, border_color=TEAL, font=ctk.CTkFont(size=12, weight="bold"),
                                          command=self._clear_all)
         self.pairs_grid = ctk.CTkFrame(b3, fg_color="transparent")
         self.pairs_grid.pack(fill="x", pady=(10, 0))
 
-    def _card(self, parent, n: str, title: str) -> ctk.CTkFrame:
-        card = ctk.CTkFrame(parent, corner_radius=14, fg_color=CARD, border_width=1, border_color=CARD_BORDER)
-        card.pack(fill="x", padx=12, pady=(0, 14))
-        top = ctk.CTkFrame(card, fg_color="transparent")
-        top.pack(fill="x", padx=16, pady=(14, 4))
-        ctk.CTkLabel(top, text=n, width=24, height=24, corner_radius=7, fg_color=TEAL_SOFT,
-                     text_color=TEAL_INK, font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
-        ctk.CTkLabel(top, text=title, font=ctk.CTkFont(size=14, weight="bold")).pack(side="left", padx=(9, 0))
+        # Pinned Start/Stop + status
+        startwrap = ctk.CTkFrame(left, fg_color="transparent")
+        startwrap.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        self.start_btn = ctk.CTkButton(startwrap, text="▶  Start trading", command=self._on_start,
+                                       height=48, corner_radius=13, fg_color=TEAL, hover_color=TEAL_HOVER,
+                                       text_color="white", font=ctk.CTkFont(size=15, weight="bold"))
+        self.start_btn.pack(fill="x")
+        self.status_label = ctk.CTkLabel(startwrap, text="Stopped", text_color=MUTED,
+                                         font=ctk.CTkFont(size=12, weight="bold"), anchor="w")
+        self.status_label.pack(anchor="w", pady=(7, 0))
+
+        # RIGHT: activity log (full height)
+        right = ctk.CTkFrame(parent, fg_color=TERM, corner_radius=14, border_width=1, border_color=TERM_EDGE)
+        right.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=12)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        lh = ctk.CTkFrame(right, fg_color="transparent")
+        lh.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        ctk.CTkLabel(lh, text="❯  Activity log", text_color="#d6e0e2",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+        ctk.CTkLabel(lh, text="live", text_color="#5c6c70", font=ctk.CTkFont(size=10)).pack(side="right")
+        self.log = ctk.CTkTextbox(right, corner_radius=0, fg_color=TERM, text_color=TERM_INK,
+                                  border_width=0, font=ctk.CTkFont(family="Consolas", size=11), wrap="word")
+        self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.log.configure(state="disabled")
+
+    def _build_settings(self, parent) -> None:
+        # header
+        top = ctk.CTkFrame(parent, fg_color="transparent")
+        top.pack(fill="x", padx=18, pady=(14, 6))
+        ctk.CTkButton(top, text="←  Back", width=78, height=32, corner_radius=9, fg_color="transparent",
+                      hover_color=NEUTRAL_BG, text_color=MUTED, border_width=1, border_color=EDGE,
+                      font=ctk.CTkFont(size=13, weight="bold"), command=self._show_main).pack(side="left")
+        ctk.CTkLabel(top, text="Settings", font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=INK).pack(side="left", padx=(12, 0))
+
+        wrap = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        wrap.pack(fill="both", expand=True, padx=14, pady=(6, 14))
+        wrap.columnconfigure(0, weight=1)
+
+        # Account
+        acc = self._card(wrap, "Account")
+        self.settings_account = ctk.CTkLabel(acc, text="", wraplength=600, justify="left", anchor="w",
+                                             text_color=MUTED, font=ctk.CTkFont(size=13))
+        self.settings_account.pack(fill="x")
+        row = ctk.CTkFrame(acc, fg_color="transparent")
+        row.pack(fill="x", pady=(12, 0))
+        txt = ctk.CTkFrame(row, fg_color="transparent")
+        txt.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(txt, text="Unlink this computer", anchor="w", text_color=INK,
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(txt, text="Stops the bot here. You can link again any time with a new code.",
+                     anchor="w", text_color=FAINT, wraplength=520, justify="left",
+                     font=ctk.CTkFont(size=11)).pack(anchor="w")
+        self.unlink_btn = ctk.CTkButton(row, text="Unlink", width=96, height=36, corner_radius=9,
+                                        fg_color="transparent", hover_color="#fbeae7", text_color=NEG_INK,
+                                        border_width=1, border_color=NEG_EDGE,
+                                        font=ctk.CTkFont(size=12, weight="bold"), command=self._on_unlink)
+        self.unlink_btn.pack(side="right")
+
+        # About
+        ab = self._card(wrap, "About")
+        ctk.CTkLabel(ab, text=f"Beyond Signal Bot · v{CLIENT_VERSION}", anchor="w", text_color=INK,
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(ab, text="You're on the latest version.", anchor="w", text_color=FAINT,
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(2, 0))
+
+    def _show_settings(self) -> None:
+        self._refresh_settings_account()
+        self.main_frame.pack_forget()
+        self.settings_frame.pack(side="top", fill="both", expand=True)
+
+    def _show_main(self) -> None:
+        self.settings_frame.pack_forget()
+        self.main_frame.pack(side="top", fill="both", expand=True)
+
+    def _refresh_settings_account(self) -> None:
+        if self.device_key:
+            self.settings_account.configure(text="✓ Linked to your Beyond Signal account.", text_color=GREEN)
+            self.unlink_btn.configure(state="normal")
+        else:
+            self.settings_account.configure(text="Not linked yet. Connect your account from the main screen.",
+                                            text_color=MUTED)
+            self.unlink_btn.configure(state="disabled")
+
+    def _card(self, parent, title: str) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(parent, corner_radius=14, fg_color=SURFACE, border_width=1, border_color=EDGE)
+        card.pack(fill="x", pady=(0, 14))
+        ctk.CTkLabel(card, text=title, text_color=INK,
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(14, 2))
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=16, pady=(0, 16))
+        inner.pack(fill="x", padx=16, pady=(4, 16))
         return inner
 
     def _field(self, parent, label, var, show=None, full=True) -> None:
@@ -200,6 +334,18 @@ class BotApp:
             e.configure(width=150)
             e.pack(anchor="w")
         self.entries.append(e)
+
+    def _copy_code(self) -> None:
+        code = self.code_label.cget("text")
+        if not code:
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+            self.copy_btn.configure(text="Copied")
+            self.root.after(1200, lambda: self.copy_btn.configure(text="Copy"))
+        except Exception:
+            pass
 
     # ── logging into the panel ─────────────────────────────────────────────────
     def _attach_logging(self) -> None:
@@ -253,10 +399,11 @@ class BotApp:
     # ── link state ─────────────────────────────────────────────────────────────
     def _refresh_link_state(self) -> None:
         if self.device_key:
-            self.link_status.configure(text="✓ Linked to your Beyond Signal account.", text_color=GREEN)
-            self.code_label.pack_forget()
-            self.link_btn.configure(text="Unlink", command=self._on_unlink, fg_color="transparent",
-                                    text_color=MUTED, border_width=1, border_color=CARD_BORDER, hover_color=PAGE)
+            self.link_status.configure(text="✓ Linked to your Beyond Signal account. "
+                                            "Manage or unlink in Settings (⚙).", text_color=GREEN)
+            self.code_row.pack_forget()
+            self.link_btn.pack_forget()
+            self._set_conn_pill("linked")
             self._load_pairs_async()
         else:
             self.link_status.configure(
@@ -264,6 +411,8 @@ class BotApp:
                      f"{SERVER_URL}/bot while signed in (Premium).", text_color=MUTED)
             self.link_btn.configure(text="Connect account", command=self._on_connect, state="normal",
                                     fg_color=TEAL, text_color="white", border_width=0, hover_color=TEAL_HOVER)
+            self.link_btn.pack(anchor="w", pady=(12, 0))
+            self._set_conn_pill("off")
         self._update_start_enabled()
 
     def _update_start_enabled(self) -> None:
@@ -300,7 +449,7 @@ class BotApp:
         self.link_status.configure(
             text=f"Enter this code at {SERVER_URL}/bot (signed in, Premium). Waiting for approval…", text_color=MUTED)
         self.code_label.configure(text=code)
-        self.code_label.pack(anchor="w", pady=(8, 0))
+        self.code_row.pack(anchor="w", pady=(10, 0))
 
     def _linked_ok(self) -> None:
         self.linking = False
@@ -328,7 +477,9 @@ class BotApp:
         self.sel_all_btn.pack_forget()
         self.clr_all_btn.pack_forget()
         self.pairs_hint.configure(text="Connect your account to see the pairs your plan allows.")
+        self._refresh_settings_account()
         self._refresh_link_state()
+        self._show_main()
 
     def _select_all(self) -> None:
         for v in self.pair_vars.values():
@@ -382,9 +533,10 @@ class BotApp:
             name = pair_icons.display_name(p)
             txt = ctk.CTkFrame(cell, fg_color="transparent")
             txt.pack(side="left", fill="x", expand=True)
-            ctk.CTkLabel(txt, text=name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(anchor="w")
+            ctk.CTkLabel(txt, text=name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+                         text_color=INK).pack(anchor="w")
             if name != p:
-                ctk.CTkLabel(txt, text=p, font=ctk.CTkFont(size=10), text_color=MUTED, anchor="w").pack(anchor="w")
+                ctk.CTkLabel(txt, text=p, font=ctk.CTkFont(size=10), text_color=FAINT, anchor="w").pack(anchor="w")
             self.pair_widgets.append(cb)
 
     def _pair_icon(self, parent, symbol: str) -> ctk.CTkLabel:
@@ -397,7 +549,7 @@ class BotApp:
             except Exception:
                 pass
         return ctk.CTkLabel(parent, text=symbol[:2].upper(), width=24, height=24, corner_radius=6,
-                            fg_color=TEAL_SOFT, text_color=TEAL_INK, font=ctk.CTkFont(size=10, weight="bold"))
+                            fg_color=NEUTRAL_BG, text_color=NEUTRAL_INK, font=ctk.CTkFont(size=10, weight="bold"))
 
     # ── start / stop ───────────────────────────────────────────────────────────
     def _on_start(self) -> None:
@@ -408,7 +560,7 @@ class BotApp:
         save_settings(data)
 
         self.start_btn.configure(state="disabled")
-        self.status_label.configure(text="Starting…", text_color=AMBER)
+        self.status_label.configure(text="Starting…", text_color=WARN_INK)
         threading.Thread(target=self._start_worker, args=(data,), daemon=True).start()
 
     def _run_loop(self) -> None:
@@ -462,7 +614,8 @@ class BotApp:
         self.running = True
         self.status_label.configure(text="● Running — trading the signals", text_color=GREEN)
         self.start_btn.configure(text="■  Stop trading", command=self._on_stop, state="normal",
-                                 fg_color="#b91c1c", hover_color="#991b1b")
+                                 fg_color=STOP_RED, hover_color=STOP_RED_HOVER)
+        self._set_conn_pill("running")
         self._set_inputs_enabled(False)
 
     def _start_failed(self, msg: str) -> None:
@@ -475,6 +628,7 @@ class BotApp:
         self.status_label.configure(text="Stopped", text_color=MUTED)
         self.start_btn.configure(text="▶  Start trading", command=self._on_start,
                                  fg_color=TEAL, hover_color=TEAL_HOVER)
+        self._set_conn_pill("linked" if self.device_key else "off")
         self._set_inputs_enabled(True)
         self._update_start_enabled()
 
