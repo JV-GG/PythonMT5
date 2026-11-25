@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # Portal mode (customer builds): no api_key; the bot links to a Beyond Signal Premium account and swaps a device
     # key for short access tokens. Your own server bot keeps portal_mode=False and uses api_key as before.
     portal_mode: bool = False
+    lot_size: float = 0.01        # the one lot the customer sets (all pairs); clamped to [min_lot, max_lot]
+    min_lot: float = 0.01         # lot clamp, set by the server config
+    max_lot: float = 1.0          # lot clamp, set by the server config
 
     # Trading
     allowed_symbols: str | list[str] = ["XAUUSD", "BTCUSD", "XAGUSD"]

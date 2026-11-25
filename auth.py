@@ -23,6 +23,11 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in excluded_paths:
             return await call_next(request)
 
+        # Customer builds: the bot trades on its own from the signal feed, so the local control API is turned off.
+        # (It would otherwise be unauthenticated here, since portal builds carry no api_key.)
+        if settings.portal_mode:
+            return JSONResponse(status_code=403, content={"success": False, "error": "The control API is disabled on this build."})
+
         api_key = request.headers.get("X-API-Key")
         if not api_key or api_key != settings.api_key:
             return JSONResponse(

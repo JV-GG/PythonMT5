@@ -514,18 +514,38 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     settings = get_settings()
 
     portal = None
+    batch: dict[str, Any] | None = None
     if settings.portal_mode:
         from config import get_portal
         portal = get_portal()
+        if portal is not None:
+            # One request returns the latest signal for every pair this account may trade (vs one call per pair)
+            global portal_block_new
+            try:
+                batch = await portal.fetch_signals(client)
+                portal_block_new = False
+            except PlanEnded:
+                if not portal_block_new:
+                    logger.warning("Premium plan ended — managing open trades, opening no new ones")
+                portal_block_new = True
+                return
+            except Unlinked:
+                logger.error("This bot is no longer linked. Restart it and link again from the portal.")
+                return
+            except Exception as e:
+                _feed_failed("portal", f"{type(e).__name__}")
+                return
 
     for pair_code in SIGNALTRADE_PAIR_CODES:
         if portal is not None:
             # The server decides the account's pairs (admin-enabled ∩ plan ∩ ticked); empty until the first token
             if portal.allowed_mt5 and pair_code not in portal.allowed_mt5:
                 continue
+            data = (batch or {}).get(pair_code)
         elif pair_code not in settings.allowed_symbols:
             continue
-        data = await _fetch_signal(client, pair_code)
+        else:
+            data = await _fetch_signal(client, pair_code)
         if data is None:
             continue
 
@@ -776,8 +796,10 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                 f"tp1={trade_req.tp1 or trade_req.tp} tp2={trade_req.tp_final}"
             )
 
-            # Record in SignalTrade's consecutive-direction tracker
+            # Record in SignalTrade's consecutive-direction tracker (your own bot only; customer bots never post here)
             try:
+                if settings.portal_mode:
+                    raise StopIteration  # skip recording for customer bots
                 headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
                 async with httpx.AsyncClient() as record_client:
                     await record_client.post(
@@ -787,6 +809,8 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
                         timeout=5.0,
                     )
                     logger.info(f"[TRACKER] Recorded {pair_display} {trade_req.order_type.upper()} in SignalTrade")
+            except StopIteration:
+                pass
             except httpx.RequestError as rec_err:
                 logger.warning(f"[TRACKER] Failed to record trade in SignalTrade: {rec_err}")
 

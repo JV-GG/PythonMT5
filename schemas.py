@@ -48,6 +48,11 @@ class TradeRequest(BaseModel):
         settings = get_settings()
         sym_clean = canonical_symbol(self.symbol)
 
+        # Portal (customer) build: one user lot for every pair, clamped to the server's limits
+        if settings.portal_mode:
+            self.volume = min(max(settings.lot_size, settings.min_lot), settings.max_lot)
+            return self
+
         if sym_clean == "XAUUSD":
             from datetime import datetime, timezone as dt_timezone, timedelta as dt_timedelta
             malaysia_tz = dt_timezone(dt_timedelta(hours=8))

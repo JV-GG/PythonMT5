@@ -119,9 +119,25 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Could not link this bot: {e}")
                 raise SystemExit(1)
         from config import get_portal
+        from portal_link import fetch_config, version_ok, PlanEnded, Unlinked
         key = load_device_key()
-        if key and get_portal():
-            get_portal().set_key(key)
+        portal = get_portal()
+        if key and portal:
+            portal.set_key(key)
+            try:
+                cfg = fetch_config(settings.signaltrade_url.rstrip("/"), key)
+                if not version_ok(cfg.get("minClientVersion", "0")):
+                    logger.error("This bot is out of date. Download the latest version from the portal.")
+                    raise SystemExit(1)
+                for k, v in (cfg.get("rules") or {}).items():
+                    if hasattr(settings, k):
+                        setattr(settings, k, v)   # locked money rules come from the server, not the file
+                settings.min_lot = float(cfg.get("minLot", settings.min_lot))
+                settings.max_lot = float(cfg.get("maxLot", settings.max_lot))
+                logger.info(f"Loaded trading rules from the server; lot {settings.lot_size} (allowed {settings.min_lot}-{settings.max_lot})")
+            except (PlanEnded, Unlinked) as e:
+                logger.error(f"Cannot start the bot: {e}")
+                raise SystemExit(1)
 
     try:
         connect_mt5()

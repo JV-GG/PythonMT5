@@ -29,6 +29,7 @@ logger = logging.getLogger("portal")
 _SERVICE = "BeyondSignalBot"
 _ACCOUNT = "device_key"
 _TOKEN_SKEW = 60  # refresh a token this many seconds before it expires
+CLIENT_VERSION = "1.0.0"
 
 
 # ── device key storage ────────────────────────────────────────────────────────
@@ -158,3 +159,36 @@ class PortalClient:
         self._exp = time.time() + float(data.get("expiresInSec", 900))
         self.allowed_mt5 = {p.replace("/", "").upper() for p in data.get("pairs", [])}
         return self._token
+
+    async def fetch_signals(self, client: httpx.AsyncClient) -> dict:
+        """Latest signal per allowed pair in one request, keyed by MT5 code (XAUUSD). May raise PlanEnded/Unlinked."""
+        token = await self.access_token(client)
+        r = await client.get(f"{self.server_url}/api/bot/signals", headers={"x-bot-token": token}, timeout=15.0)
+        if r.status_code == 401:
+            self._token, self._exp = None, 0.0  # token expired mid-cycle: drop it, next call re-swaps the key
+            raise Unlinked("Bot session expired")
+        r.raise_for_status()
+        return {k: v for k, v in r.json().get("signals", {}).items() if v}
+
+
+def fetch_config(server_url: str, device_key: str) -> dict:
+    """Locked money rules + lot limits + the lowest client version allowed. Raises on an unlinked / non-Premium key."""
+    with httpx.Client(base_url=server_url, timeout=15.0) as c:
+        r = c.get("/api/bot/config", headers={"x-bot-key": device_key})
+        if r.status_code == 403:
+            raise PlanEnded(r.json().get("error", "Premium required"))
+        if r.status_code == 401:
+            raise Unlinked(r.json().get("error", "Bot not linked"))
+        r.raise_for_status()
+        return r.json()
+
+
+def _version_tuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except Exception:
+        return (0,)
+
+
+def version_ok(minimum: str) -> bool:
+    return _version_tuple(CLIENT_VERSION) >= _version_tuple(minimum)

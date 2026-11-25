@@ -61,5 +61,32 @@ async def run():
     print("test_portal_link: all 5 checks passed")
 
 
+async def run_phase2():
+    import httpx
+    from portal_link import PortalClient, PlanEnded, version_ok, CLIENT_VERSION
+
+    # fetch_signals: swaps key for token, drops null entries
+    seq = {"n": 0}
+    def h(req):
+        if req.url.path == "/api/bot/token":
+            return httpx.Response(200, json={"accessToken": "t", "expiresInSec": 900, "pairs": ["XAU/USD", "BTC/USD"]})
+        if req.url.path == "/api/bot/signals":
+            seq["n"] += 1
+            assert req.headers["x-bot-token"] == "t"
+            return httpx.Response(200, json={"signals": {"XAUUSD": {"pair": "XAU/USD"}, "BTCUSD": None}})
+        return httpx.Response(404)
+    p = PortalClient(server_url="https://s", _key="bs_bot_abc")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(h)) as c:
+        sig = await p.fetch_signals(c)
+    assert set(sig.keys()) == {"XAUUSD"}, sig   # null BTCUSD dropped
+    assert seq["n"] == 1
+
+    # version gate
+    assert version_ok("1.0.0") is True
+    assert version_ok("9.9.9") is False
+    print("test_portal_link phase2: all checks passed")
+
+
 if __name__ == "__main__":
     asyncio.run(run())
+    asyncio.run(run_phase2())
