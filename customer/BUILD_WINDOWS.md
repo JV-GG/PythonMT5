@@ -20,7 +20,7 @@ on a Windows PC or VPS. Do this once per release; customers only download the re
 
    ```
    pyinstaller --onefile --windowed --name BeyondSignalBot ^
-     --collect-all MetaTrader5 --collect-all keyring ^
+     --collect-all MetaTrader5 --collect-all keyring --collect-all customtkinter ^
      gui.py
    ```
 
@@ -43,7 +43,7 @@ Beyond Signal Bot (Windows)
 2. Unzip and run BeyondSignalBot.exe. Windows may ask you to allow it.
 3. Click "Connect account", then enter the code it shows at
    https://signal.beyond-signal.net/bot  (sign in, Premium plan).
-4. Type your MT5 account number, password and server, pick your lot size and pairs.
+4. Make sure MetaTrader 5 is open and logged in to your broker, then pick your lot size and pairs.
 5. Click "Start trading". Leave the window open (or minimised) while it trades.
    Closing the window stops the bot.
 

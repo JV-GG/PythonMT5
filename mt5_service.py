@@ -67,6 +67,24 @@ def connect_mt5() -> bool:
         return True
 
     if not settings.mt5_login or not settings.mt5_password or not settings.mt5_server:
+        if getattr(settings, "portal_mode", False):
+            # Desktop app: attach to the MetaTrader 5 terminal the customer already has open and logged
+            # in — no account number, password or server typed into our app. The password never leaves MT5.
+            init_kwargs = {}
+            if settings.mt5_terminal_path:
+                init_kwargs["path"] = settings.mt5_terminal_path
+            if not mt5.initialize(**init_kwargs):
+                raise MT5ConnectionError(
+                    "Couldn't reach MetaTrader 5. Open MT5, log in to your broker account, then click Start trading.")
+            info = mt5.account_info()
+            if info is None:
+                mt5.shutdown()
+                raise MT5ConnectionError(
+                    "MetaTrader 5 is open but not logged in. Log in to your broker account in MT5, then click Start trading.")
+            logger.info(f"MT5 connected (attached to the open terminal). Account: {info.login}, server: {info.server}")
+            if _money_divisor() > 1:
+                logger.info("Cent account: balance and profit are divided by 100, so the USD limits are real dollars")
+            return True
         logger.warning(
             "MT5 credentials not configured. Running in Dry-Run simulation mode."
         )
