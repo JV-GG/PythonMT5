@@ -1,0 +1,81 @@
+name: Build Windows bot
+
+# Builds BeyondSignalBot.exe on a GitHub-hosted Windows machine (no Windows PC needed) and
+# packages the customer zip. Run it from the Actions tab (Run workflow), or it runs on a v* tag.
+# The zip is attached to the run as a downloadable artifact; on a tag it's also attached to a Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, e.g. 1.0.0"
+        required: true
+        default: "1.0.0"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # needed to attach the zip to a Release on a tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Work out the version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "v=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the app
+        run: >
+          pyinstaller --onefile --windowed --name BeyondSignalBot
+          --collect-all MetaTrader5 --collect-all keyring
+          gui.py
+
+      - name: Package the customer zip
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.v }}"
+          $stage = "package"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item dist/BeyondSignalBot.exe $stage/
+          @"
+          Beyond Signal Bot (Windows)
+
+          1. Make sure MetaTrader 5 is installed and you can log in to your account in it.
+          2. Run BeyondSignalBot.exe. Windows may ask you to allow it.
+          3. Click "Connect account", then enter the code it shows at
+             https://signal.beyond-signal.net/bot  (sign in, Premium plan).
+          4. Type your MT5 account number, password and server, pick your lot size and pairs.
+          5. Click "Start trading". Leave the window open (or minimised) while it trades.
+             Closing the window stops the bot.
+
+          Your MT5 login is stored only on this PC, in the Windows Credential Manager.
+          "@ | Out-File -Encoding utf8 $stage/README.txt
+          Compress-Archive -Path "$stage/*" -DestinationPath "BeyondSignalBot-$ver.zip" -Force
+
+      - name: Upload the zip as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeyondSignalBot-${{ steps.ver.outputs.v }}
+          path: BeyondSignalBot-${{ steps.ver.outputs.v }}.zip
+
+      - name: Attach the zip to the Release (tag builds only)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BeyondSignalBot-${{ steps.ver.outputs.v }}.zip

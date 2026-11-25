@@ -93,32 +93,45 @@ def clear_device_key() -> None:
         pass
 
 
-# ── link flow (runs once, at startup, before the trading loop) ────────────────
-def link_interactive(server_url: str, device_name: str, show=print, timeout_s: int = 600) -> str:
-    """Start a link, show the code, wait for the user to approve, return the saved device key."""
+# ── link flow ─────────────────────────────────────────────────────────────────
+def link_start(server_url: str, device_name: str) -> tuple[str, str]:
+    """Begin a link; returns (code to show the user, poll_secret to poll with)."""
     poll_secret = secrets.token_urlsafe(24)
     with httpx.Client(base_url=server_url, timeout=15.0) as c:
         r = c.post("/api/bot/link/start", json={"pollSecret": poll_secret, "deviceName": device_name})
         r.raise_for_status()
-        code = r.json()["code"]
-        show("\n" + "=" * 44)
-        show("  Link this bot to your Beyond Signal account")
-        show(f"  1. Open:  {server_url}/bot/link")
-        show("  2. Sign in (Premium) and enter this code:")
-        show(f"\n        {code}\n")
-        show("  Waiting for approval…")
-        show("=" * 44 + "\n")
+        return r.json()["code"], poll_secret
 
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            time.sleep(3)
-            pr = c.post("/api/bot/link/poll", json={"code": code, "pollSecret": poll_secret})
-            if pr.status_code == 200:
-                data = pr.json()
-                if data.get("status") == "linked":
-                    save_device_key(data["key"])
-                    show("  ✓ Bot linked.\n")
-                    return data["key"]
+
+def link_poll(server_url: str, code: str, poll_secret: str) -> str | None:
+    """One poll. Returns the saved device key once the user approves, else None."""
+    with httpx.Client(base_url=server_url, timeout=15.0) as c:
+        pr = c.post("/api/bot/link/poll", json={"code": code, "pollSecret": poll_secret})
+        if pr.status_code == 200 and pr.json().get("status") == "linked":
+            key = pr.json()["key"]
+            save_device_key(key)
+            return key
+    return None
+
+
+def link_interactive(server_url: str, device_name: str, show=print, timeout_s: int = 600) -> str:
+    """Console link: start, show the code, wait for approval, return the saved device key."""
+    code, poll_secret = link_start(server_url, device_name)
+    show("\n" + "=" * 44)
+    show("  Link this bot to your Beyond Signal account")
+    show(f"  1. Open:  {server_url}/bot/link")
+    show("  2. Sign in (Premium) and enter this code:")
+    show(f"\n        {code}\n")
+    show("  Waiting for approval…")
+    show("=" * 44 + "\n")
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(3)
+        key = link_poll(server_url, code, poll_secret)
+        if key:
+            show("  ✓ Bot linked.\n")
+            return key
     raise TimeoutError("Link not approved in time. Restart the bot to try again.")
 
 
@@ -169,6 +182,17 @@ class PortalClient:
             raise Unlinked("Bot session expired")
         r.raise_for_status()
         return {k: v for k, v in r.json().get("signals", {}).items() if v}
+
+
+def fetch_plan_pairs(server_url: str, device_key: str) -> list[str]:
+    """The MT5 codes this account may trade right now (admin-enabled ∩ plan), for the GUI's pair checklist.
+    Returns [] if the key is unlinked or the plan has lapsed."""
+    with httpx.Client(base_url=server_url, timeout=15.0) as c:
+        r = c.post("/api/bot/token", headers={"x-bot-key": device_key})
+        if r.status_code in (401, 403):
+            return []
+        r.raise_for_status()
+        return [p.replace("/", "").upper() for p in r.json().get("pairs", [])]
 
 
 def fetch_config(server_url: str, device_key: str) -> dict:
