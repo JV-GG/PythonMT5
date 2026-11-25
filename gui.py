@@ -15,6 +15,7 @@ in the activity panel.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import queue
@@ -73,6 +74,13 @@ class BotApp:
         self._pair_imgs: list[ctk.CTkImage] = []
         self.entries: list[ctk.CTkEntry] = []
         self._link = None  # (code, poll_secret) while a link is in progress
+
+        # The trading engine (signal watcher + trade monitor) is asyncio-based and needs a LIVE
+        # event loop. A Tk GUI has none, so we run one in a background thread for the engine.
+        # Without it, start_watcher()/start_monitor() raise "no running event loop" and
+        # "Start trading" hangs forever on "Starting…".
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self._run_loop, daemon=True).start()
 
         root.title("Beyond Signal Bot")
         root.geometry("470x790")
@@ -403,6 +411,10 @@ class BotApp:
         self.status_label.configure(text="Starting…", text_color=AMBER)
         threading.Thread(target=self._start_worker, args=(data,), daemon=True).start()
 
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
     def _start_worker(self, data: dict) -> None:
         try:
             s = get_settings()
@@ -429,10 +441,17 @@ class BotApp:
             from signal_watcher import start_watcher
             from trade_monitor import start_monitor
 
-            connect_mt5()
-            load_active_trades()
-            start_monitor()
-            start_watcher()
+            # Connect to MT5, load state and launch the watcher/monitor ON the engine loop, so
+            # the async tasks have a running loop and every MT5 call stays on one thread. result()
+            # waits here, so a connect error or hang surfaces as a clear "Could not start" instead
+            # of leaving the UI stuck on "Starting…".
+            async def _begin():
+                connect_mt5()
+                load_active_trades()
+                start_monitor()
+                start_watcher()
+
+            asyncio.run_coroutine_threadsafe(_begin(), self.loop).result(timeout=60)
             self.root.after(0, self._started_ok)
         except (PlanEnded, Unlinked) as e:
             self.root.after(0, lambda: self._start_failed(str(e)))
@@ -467,9 +486,14 @@ class BotApp:
             from signal_watcher import stop_watcher
             from trade_monitor import stop_monitor
             from mt5_service import disconnect_mt5
-            stop_watcher()
-            stop_monitor()
-            disconnect_mt5()
+
+            # Cancel the tasks and disconnect on the engine loop (same thread they run on).
+            async def _end():
+                stop_watcher()
+                stop_monitor()
+                disconnect_mt5()
+
+            asyncio.run_coroutine_threadsafe(_end(), self.loop).result(timeout=15)
         except Exception as e:
             self._log(f"Error while stopping: {e}")
 
@@ -486,6 +510,7 @@ class BotApp:
         if self.running and not messagebox.askokcancel("Quit", "This will stop the bot and close any monitoring. Quit?"):
             return
         self._stop()
+        self.loop.call_soon_threadsafe(self.loop.stop)
         self.root.destroy()
 
 
