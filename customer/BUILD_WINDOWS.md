@@ -21,6 +21,7 @@ on a Windows PC or VPS. Do this once per release; customers only download the re
    ```
    pyinstaller --onefile --windowed --name BeyondSignalBot ^
      --collect-all MetaTrader5 --collect-all keyring --collect-all customtkinter ^
+     --add-data "assets\pairs;assets\pairs" ^
      gui.py
    ```
 

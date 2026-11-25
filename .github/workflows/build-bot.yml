@@ -44,6 +44,7 @@ jobs:
         run: >
           pyinstaller --onefile --windowed --name BeyondSignalBot
           --collect-all MetaTrader5 --collect-all keyring --collect-all customtkinter
+          --add-data "assets/pairs;assets/pairs"
           gui.py
 
       - name: Package the customer zip

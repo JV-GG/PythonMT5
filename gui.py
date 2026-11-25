@@ -24,6 +24,9 @@ import tkinter as tk
 from tkinter import messagebox
 
 import customtkinter as ctk
+from PIL import Image
+
+import pair_icons
 
 from config import get_settings
 from portal_link import (
@@ -67,6 +70,7 @@ class BotApp:
         self.allowed_pairs: list[str] = []
         self.pair_vars: dict[str, tk.BooleanVar] = {}
         self.pair_widgets: list[ctk.CTkCheckBox] = []
+        self._pair_imgs: list[ctk.CTkImage] = []
         self.entries: list[ctk.CTkEntry] = []
         self._link = None  # (code, poll_secret) while a link is in progress
 
@@ -355,15 +359,37 @@ class BotApp:
         self.sel_all_btn.pack(side="right", padx=(6, 0))
         self.clr_all_btn.pack(side="right")
         chosen = set(self._saved_pairs) if getattr(self, "_saved_pairs", None) else set(pairs)
+        self._pair_imgs = []
         self.pairs_grid.columnconfigure((0, 1), weight=1)
         for i, p in enumerate(pairs):
             var = tk.BooleanVar(value=p in chosen)
             self.pair_vars[p] = var
-            cb = ctk.CTkCheckBox(self.pairs_grid, text=p, variable=var, onvalue=True, offvalue=False,
+            cell = ctk.CTkFrame(self.pairs_grid, fg_color="transparent")
+            cell.grid(row=i // 2, column=i % 2, sticky="ew", padx=4, pady=3)
+            cb = ctk.CTkCheckBox(cell, text="", variable=var, onvalue=True, offvalue=False, width=22,
                                  checkbox_width=18, checkbox_height=18, corner_radius=5,
-                                 fg_color=TEAL, hover_color=TEAL_HOVER, font=ctk.CTkFont(size=12))
-            cb.grid(row=i // 2, column=i % 2, sticky="w", padx=6, pady=6)
+                                 fg_color=TEAL, hover_color=TEAL_HOVER)
+            cb.pack(side="left")
+            self._pair_icon(cell, p).pack(side="left", padx=(2, 8))
+            name = pair_icons.display_name(p)
+            txt = ctk.CTkFrame(cell, fg_color="transparent")
+            txt.pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(txt, text=name, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(anchor="w")
+            if name != p:
+                ctk.CTkLabel(txt, text=p, font=ctk.CTkFont(size=10), text_color=MUTED, anchor="w").pack(anchor="w")
             self.pair_widgets.append(cb)
+
+    def _pair_icon(self, parent, symbol: str) -> ctk.CTkLabel:
+        path = pair_icons.logo_path(symbol)
+        if path:
+            try:
+                img = ctk.CTkImage(Image.open(path), size=(24, 24))
+                self._pair_imgs.append(img)
+                return ctk.CTkLabel(parent, text="", image=img, width=24)
+            except Exception:
+                pass
+        return ctk.CTkLabel(parent, text=symbol[:2].upper(), width=24, height=24, corner_radius=6,
+                            fg_color=TEAL_SOFT, text_color=TEAL_INK, font=ctk.CTkFont(size=10, weight="bold"))
 
     # ── start / stop ───────────────────────────────────────────────────────────
     def _on_start(self) -> None:
