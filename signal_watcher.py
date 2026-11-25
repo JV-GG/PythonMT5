@@ -14,6 +14,7 @@ try:
 except ImportError:
     mt5 = None
 
+from portal_link import PlanEnded, Unlinked
 from config import get_settings
 import mt5_service
 from mt5_service import (
@@ -404,7 +405,29 @@ def _feed_ok(pair_code: str) -> None:
 async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, Any] | None:
     """Fetch the latest signal for a pair from SignalTrade (supports both Client & Admin LLM portals)."""
     settings = get_settings()
-    headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
+    global portal_block_new
+    if settings.portal_mode:
+        from config import get_portal
+        portal = get_portal()
+        if portal is None:
+            return None
+        try:
+            token = await portal.access_token(client)
+            portal_block_new = False
+        except PlanEnded:
+            if not portal_block_new:
+                logger.warning("Premium plan ended — managing open trades, opening no new ones")
+            portal_block_new = True
+            return None
+        except Unlinked:
+            logger.error("This bot is no longer linked. Restart it and link again from the portal.")
+            return None
+        except Exception as e:
+            _feed_failed(pair_code, f"token {type(e).__name__}")
+            return None
+        headers = {"x-bot-token": token}
+    else:
+        headers = {"x-api-key": settings.api_key, "Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
 
     # 1. Try Client Portal endpoint first (/api/signals/{pair_code})
     url = f"{settings.signaltrade_url}/api/signals/{pair_code}"
@@ -414,7 +437,10 @@ async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, 
             _feed_ok(pair_code)
             return response.json()
 
-        # 2. Fallback to Admin LLM Portal endpoint (/api/dialogpt-signals)
+        # 2. Fallback to Admin LLM Portal endpoint (/api/dialogpt-signals) — your own bot only
+        if settings.portal_mode:
+            _feed_failed(pair_code, f"HTTP {response.status_code}")
+            return None
         admin_url = f"{settings.signaltrade_url}/api/dialogpt-signals?pair={pair_code}&limit=1"
         admin_res = await client.get(admin_url, headers=headers, timeout=10.0)
         if admin_res.status_code == 200:
@@ -480,14 +506,24 @@ def _signal_age_minutes(timestamp: Any) -> float | None:
 
 
 _reject_until: dict[str, float] = {}  # pair -> time.time() until which opens are paused after a rejection
+portal_block_new = False  # portal mode: True once the Premium plan has lapsed (manage open trades, open no new ones)
 
 
 async def _poll_and_fire(client: httpx.AsyncClient) -> None:
     """Poll all pairs once and fire trades for any new BUY/SELL signals."""
     settings = get_settings()
 
+    portal = None
+    if settings.portal_mode:
+        from config import get_portal
+        portal = get_portal()
+
     for pair_code in SIGNALTRADE_PAIR_CODES:
-        if pair_code not in settings.allowed_symbols:
+        if portal is not None:
+            # The server decides the account's pairs (admin-enabled ∩ plan ∩ ticked); empty until the first token
+            if portal.allowed_mt5 and pair_code not in portal.allowed_mt5:
+                continue
+        elif pair_code not in settings.allowed_symbols:
             continue
         data = await _fetch_signal(client, pair_code)
         if data is None:

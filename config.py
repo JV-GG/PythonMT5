@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # API Security
     api_key: str = ""
 
+    # Portal mode (customer builds): no api_key; the bot links to a Beyond Signal Premium account and swaps a device
+    # key for short access tokens. Your own server bot keeps portal_mode=False and uses api_key as before.
+    portal_mode: bool = False
+
     # Trading
     allowed_symbols: str | list[str] = ["XAUUSD", "BTCUSD", "XAGUSD"]
     default_volume: float = 0.01          # default trade volume in lots
@@ -198,3 +202,21 @@ def get_settings() -> Settings:
         _cached_settings = Settings()
         _cached_env_mtime = mtime
     return _cached_settings
+
+
+_portal = None
+
+
+def get_portal():
+    """The shared PortalClient in portal mode, else None."""
+    global _portal
+    settings = get_settings()
+    if not settings.portal_mode:
+        return None
+    if _portal is None:
+        from portal_link import PortalClient, load_device_key
+        _portal = PortalClient(server_url=settings.signaltrade_url.rstrip("/"))
+        key = load_device_key()
+        if key:
+            _portal.set_key(key)
+    return _portal

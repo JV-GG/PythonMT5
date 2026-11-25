@@ -107,6 +107,22 @@ async def lifespan(app: FastAPI):
     Lifecycle manager: connect to MT5 on startup, disconnect on shutdown.
     """
     logger.info("Starting up MT5 Trade API...")
+
+    # Portal mode (customer build): make sure the bot is linked to a Premium account before trading
+    if settings.portal_mode:
+        import socket
+        from portal_link import load_device_key, link_interactive
+        if not load_device_key():
+            try:
+                link_interactive(settings.signaltrade_url.rstrip("/"), device_name=socket.gethostname())
+            except Exception as e:
+                logger.error(f"Could not link this bot: {e}")
+                raise SystemExit(1)
+        from config import get_portal
+        key = load_device_key()
+        if key and get_portal():
+            get_portal().set_key(key)
+
     try:
         connect_mt5()
     except MT5ConnectionError as e:
