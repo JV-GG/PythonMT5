@@ -30,10 +30,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
-      - name: Check the code (compile everything + portal link tests)
+      - name: Check the code (compile everything + portal link and test-trade tests)
         run: |
           python -m compileall -q .
           python test_portal_link.py
+          python test_test_trade.py
 
       - name: Work out the version
         id: ver

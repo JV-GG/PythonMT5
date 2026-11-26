@@ -237,9 +237,18 @@ class BotApp:
                                        height=48, corner_radius=13, fg_color=TEAL, hover_color=TEAL_HOVER,
                                        text_color="white", font=ctk.CTkFont(size=15, weight="bold"))
         self.start_btn.pack(fill="x")
-        self.status_label = ctk.CTkLabel(startwrap, text="Stopped", text_color=MUTED,
+        srow = ctk.CTkFrame(startwrap, fg_color="transparent")
+        srow.pack(fill="x", pady=(7, 0))
+        self.status_label = ctk.CTkLabel(srow, text="Stopped", text_color=MUTED,
                                          font=ctk.CTkFont(size=12, weight="bold"), anchor="w")
-        self.status_label.pack(anchor="w", pady=(7, 0))
+        self.status_label.pack(side="left")
+        # Test: check signals arrive + open and immediately close one trade with dummy SL/TP
+        self.test_btn = ctk.CTkButton(srow, text="Run test trade", width=118, height=28, corner_radius=9,
+                                      fg_color="transparent", hover_color=TEAL_TINT, text_color=TEAL_INK,
+                                      border_width=1, border_color=TEAL, font=ctk.CTkFont(size=12, weight="bold"),
+                                      command=self._on_test)
+        self.test_btn.pack(side="right")
+        self.testing = False
 
         # RIGHT: activity log (full height)
         right = ctk.CTkFrame(parent, fg_color=TERM, corner_radius=14, border_width=1, border_color=TERM_EDGE)
@@ -456,7 +465,8 @@ class BotApp:
                         return
                 self.root.after(0, lambda: self._link_failed("Link not approved in time. Try again."))
             except Exception as e:
-                self.root.after(0, lambda: self._link_failed(f"Could not connect: {e}"))
+                msg = f"Could not connect: {e}"   # bind now: `e` is deleted when the except block ends
+                self.root.after(0, lambda: self._link_failed(msg))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -582,32 +592,37 @@ class BotApp:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
+    def _prepare_settings(self, data: dict):
+        """Customer settings + the server's locked rules, shared by Start trading and Run test trade."""
+        s = get_settings()
+        s.portal_mode = True
+        s.signaltrade_url = SERVER_URL
+        # No MT5 credentials: the bot attaches to the terminal the customer already has open (see mt5_service.connect_mt5)
+        s.mt5_login = 0
+        s.mt5_password = ""
+        s.mt5_server = ""
+        s.lot_size = data["lot_size"]
+        s.allowed_symbols = pairs_to_trade(data["pairs"], self.allowed_pairs) or list(self.allowed_pairs)
+
+        # Customer defaults that match the live VPS, in case the server's rules don't send them (older servers
+        # didn't): config.py's built-in gold days are Mon-Wed only, which skipped every gold signal Thu-Sat.
+        s.xauusd_allowed_weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+        s.signaltrade_poll_interval = 2.0
+
+        cfg = fetch_config(SERVER_URL, self.device_key)
+        if not version_ok(cfg.get("minClientVersion", "0")):
+            raise RuntimeError("This bot is out of date. Download the latest version from the portal.")
+        for k, v in (cfg.get("rules") or {}).items():
+            if hasattr(s, k):
+                setattr(s, k, v)
+        s.min_lot = float(cfg.get("minLot", s.min_lot))
+        s.max_lot = float(cfg.get("maxLot", s.max_lot))
+        s.lot_size = clamp_lot(s.lot_size, s.min_lot, s.max_lot)
+        return s
+
     def _start_worker(self, data: dict) -> None:
         try:
-            s = get_settings()
-            s.portal_mode = True
-            s.signaltrade_url = SERVER_URL
-            # No MT5 credentials: the bot attaches to the terminal the customer already has open (see mt5_service.connect_mt5)
-            s.mt5_login = 0
-            s.mt5_password = ""
-            s.mt5_server = ""
-            s.lot_size = data["lot_size"]
-            s.allowed_symbols = pairs_to_trade(data["pairs"], self.allowed_pairs) or list(self.allowed_pairs)
-
-            # Customer defaults that match the live VPS, in case the server's rules don't send them (older servers
-            # didn't): config.py's built-in gold days are Mon-Wed only, which skipped every gold signal Thu-Sat.
-            s.xauusd_allowed_weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
-            s.signaltrade_poll_interval = 2.0
-
-            cfg = fetch_config(SERVER_URL, self.device_key)
-            if not version_ok(cfg.get("minClientVersion", "0")):
-                raise RuntimeError("This bot is out of date. Download the latest version from the portal.")
-            for k, v in (cfg.get("rules") or {}).items():
-                if hasattr(s, k):
-                    setattr(s, k, v)
-            s.min_lot = float(cfg.get("minLot", s.min_lot))
-            s.max_lot = float(cfg.get("maxLot", s.max_lot))
-            s.lot_size = clamp_lot(s.lot_size, s.min_lot, s.max_lot)
+            self._prepare_settings(data)
 
             from mt5_service import connect_mt5, load_active_trades
             from signal_watcher import start_watcher
@@ -625,10 +640,9 @@ class BotApp:
 
             asyncio.run_coroutine_threadsafe(_begin(), self.loop).result(timeout=60)
             self.root.after(0, self._started_ok)
-        except (PlanEnded, Unlinked) as e:
-            self.root.after(0, lambda: self._start_failed(str(e)))
-        except Exception as e:
-            self.root.after(0, lambda: self._start_failed(str(e)))
+        except Exception as e:   # incl. PlanEnded / Unlinked
+            msg = str(e) or type(e).__name__   # bind now: `e` is deleted when the except block ends, before Tk runs this
+            self.root.after(0, lambda: self._start_failed(msg))
 
     def _started_ok(self) -> None:
         self.running = True
@@ -642,6 +656,105 @@ class BotApp:
         self.status_label.configure(text="Stopped", text_color=MUTED)
         self.start_btn.configure(state="normal")
         messagebox.showerror("Could not start", msg)
+
+    # ── test trade ─────────────────────────────────────────────────────────────
+    def _on_test(self) -> None:
+        if self.testing:
+            return
+        if not self.device_key:
+            messagebox.showerror("Connect first", "Connect your Beyond Signal account first.")
+            return
+        data = self._collect()
+        pairs = pairs_to_trade(data["pairs"], self.allowed_pairs)
+        if not pairs:
+            messagebox.showerror("No pair ticked", "Tick at least one pair to test.")
+            return
+        if not messagebox.askokcancel(
+            "Run test trade",
+            "This checks that signals reach this PC, then places one REAL trade in MetaTrader 5 and closes it "
+            "straight away:\n\n"
+            f"  • BUY {data['lot_size']} lot on the first open market among: {', '.join(pairs)}\n"
+            "  • dummy stop loss / take profit 1% away\n"
+            "  • closed within a second\n\n"
+            "It costs about the spread on that lot. Make sure MetaTrader 5 is open and logged in.\n\nRun it now?",
+        ):
+            return
+        save_settings(data)
+        self.testing = True
+        self.test_btn.configure(state="disabled", text="Testing…")
+        self.start_btn.configure(state="disabled")
+        threading.Thread(target=self._test_worker, args=(data,), daemon=True).start()
+
+    def _test_worker(self, data: dict) -> None:
+        log = logging.getLogger("test")
+        was_running = self.running
+        lines: list[str] = []
+        signals_ok = trade_ok = False
+        stage = "Account"
+        try:
+            if not was_running:
+                self._prepare_settings(data)   # also proves the account link + server rules work
+            pairs = list(get_settings().allowed_symbols)
+            stage = "Trade"
+
+            import httpx
+            from config import get_portal
+            from mt5_service import connect_mt5, disconnect_mt5, run_test_trade
+
+            # 1. Signals: one request to Beyond Signal, exactly as the signal watcher makes it
+            async def _signals():
+                async with httpx.AsyncClient() as c:
+                    return await get_portal().fetch_signals(c, pairs)
+
+            try:
+                sigs = asyncio.run_coroutine_threadsafe(_signals(), self.loop).result(timeout=30)
+                got = ", ".join(
+                    f"{k} {((v or {}).get('aiSignal') or {}).get('signal', '?')}" for k, v in sigs.items()
+                ) or "connected, no signal published for your pairs right now"
+                lines.append(f"✓ Signals: received from Beyond Signal ({got})")
+                log.info(f"TEST: signals OK — {got}")
+                signals_ok = True
+            except Exception as e:
+                reason = f"{type(e).__name__}: {e}".rstrip(": ")
+                lines.append(f"✗ Signals: could not get signals from Beyond Signal ({reason})")
+                log.error(f"TEST: signals FAILED — {reason}")
+
+            # 2. Execution: open + close one dummy trade, on the engine loop (the thread the trading engine uses)
+            async def _trade():
+                if not was_running:
+                    connect_mt5()
+                try:
+                    return run_test_trade(pairs)
+                finally:
+                    if not was_running:
+                        disconnect_mt5()
+
+            res = asyncio.run_coroutine_threadsafe(_trade(), self.loop).result(timeout=90)
+            lines.append(f"✓ Trade: opened #{res['ticket']} BUY {res['volume']} {res['symbol']} at {res['open_price']}")
+            if res.get("closed"):
+                pnl = "" if res.get("pnl") is None else f" (result {res['pnl']:+.2f} USD, the spread cost)"
+                lines.append(f"✓ Closed straight away{pnl}")
+                trade_ok = True
+            else:
+                lines.append("⚠ The test position could NOT be closed automatically. Close it now in "
+                             f"MetaTrader 5 (ticket #{res['ticket']}).")
+        except Exception as e:
+            lines.append(f"✗ {stage}: {e}")
+            log.error(f"TEST: {stage.lower()} FAILED — {e}")
+        self.root.after(0, lambda: self._test_done(signals_ok and trade_ok, lines))
+
+    def _test_done(self, ok: bool, lines: list[str]) -> None:
+        self.testing = False
+        self.test_btn.configure(state="normal", text="Run test trade")
+        if self.running:
+            self.start_btn.configure(state="normal")
+        else:
+            self._update_start_enabled()
+        body = "\n".join(lines)
+        if ok:
+            messagebox.showinfo("Test passed", body + "\n\nThis PC can receive signals and execute trades.")
+        else:
+            messagebox.showerror("Test failed", body)
 
     def _on_stop(self) -> None:
         self._stop()

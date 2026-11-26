@@ -227,11 +227,12 @@ def resolve_symbol(symbol: str) -> str:
     return symbol
 
 
-def open_trade(request: TradeRequest) -> TradeResponse:
+def open_trade(request: TradeRequest, magic: int | None = None) -> TradeResponse:
     """
     Execute a trade on MT5.
     Returns TradeResponse with order_id and executed price on success.
     Raises MT5TradeError on failure.
+    `magic` overrides the bot's magic number (the test trade uses its own so nothing else manages it).
     """
     settings = get_settings()
     symbol = resolve_symbol(request.symbol)
@@ -292,7 +293,7 @@ def open_trade(request: TradeRequest) -> TradeResponse:
         "sl": request.sl,
         "tp": request.tp,
         "deviation": settings.default_deviation,
-        "magic": settings.magic_number,
+        "magic": settings.magic_number if magic is None else magic,
         "comment": request.comment if request.comment is not None else settings.default_comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": order_type_filling,
@@ -1328,7 +1329,8 @@ def modify_position_sl_tp(position_ticket: int, new_sl: float, new_tp: float | N
     return result
 
 
-def close_position(position_ticket: int, symbol: str, volume: float, direction: str, comment: str = "Direction flip close") -> bool:
+def close_position(position_ticket: int, symbol: str, volume: float, direction: str, comment: str = "Direction flip close",
+                   magic: int | None = None) -> bool:
     """
     Close an open MT5 position by sending an opposite market order.
 
@@ -1365,7 +1367,7 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
         "position": position_ticket,
         "price": price,
         "deviation": get_settings().default_deviation,
-        "magic": get_settings().magic_number,
+        "magic": get_settings().magic_number if magic is None else magic,
         "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _filling_mode(resolved_sym),
@@ -1391,3 +1393,109 @@ def close_position(position_ticket: int, symbol: str, volume: float, direction: 
     unregister_trade(position_ticket)
     logger.info(f"Position {position_ticket} closed successfully.")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Test trade (desktop app "Run test" button)
+# ---------------------------------------------------------------------------
+
+# Test orders carry their own magic number: the trade monitor and the news guard only manage settings.magic_number,
+# so they never move or close a test position, and it never counts as one of the bot's trades.
+TEST_MAGIC = 10999
+TEST_COMMENT = "BS test trade"
+TEST_LEVEL_PCT = 0.01        # dummy SL / TP sit 1% of price away (far enough for any broker's stop distance)
+_MARKET_CLOSED_RETCODE = 10018
+
+
+def _test_levels(info: Any, tick: Any) -> tuple[float, float]:
+    """Dummy SL / TP for a test BUY: 1% of price away, wider if the broker's minimum stop distance or spread needs it."""
+    spread = tick.ask - tick.bid
+    stops = (getattr(info, "trade_stops_level", 0) or 0) * info.point
+    dist = max(tick.ask * TEST_LEVEL_PCT, stops * 3, spread * 10)
+    return round(tick.bid - dist, info.digits), round(tick.ask + dist, info.digits)
+
+
+def _find_test_position(ticket: int, symbol: str) -> Any:
+    """The test position: by ticket (hedging accounts), else the newest test-magic position on the symbol (netting)."""
+    found = mt5.positions_get(ticket=ticket)
+    if found:
+        return found[0]
+    mine = [p for p in (mt5.positions_get(symbol=symbol) or ()) if p.magic == TEST_MAGIC]
+    return max(mine, key=lambda p: p.time_msc) if mine else None
+
+
+def run_test_trade(symbols: list[str], close_attempts: int = 3) -> dict[str, Any]:
+    """
+    Prove this PC can execute a signal: open a BUY with dummy SL/TP on the first tradeable symbol, through the same
+    open_trade() a real signal uses (lot, symbol name, filling mode, margin check), then close it straight away.
+
+    Returns {"symbol", "ticket", "volume", "open_price", "closed", "pnl"} — pnl in real dollars (cent accounts /100).
+    Raises MT5ConnectionError / MT5TradeError with a customer-readable message when the test can't run or fails.
+    A position that could not be closed is reported (closed=False) so the user can close it in MT5.
+    """
+    settings = get_settings()
+    if mt5 is None or settings.dry_run or not mt5.terminal_info():
+        raise MT5ConnectionError("MetaTrader 5 is not connected. Open MT5, log in to your broker account, and try again.")
+    if not symbols:
+        raise MT5TradeError("Tick at least one pair to test.")
+
+    problems: list[str] = []
+    for sym in symbols:
+        resolved = resolve_symbol(sym)
+        info = mt5.symbol_info(resolved)
+        tick = mt5.symbol_info_tick(resolved)
+        if info is None or tick is None or not tick.ask or not tick.bid:
+            problems.append(f"{sym}: not available at your broker")
+            continue
+        if info.trade_mode != getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4):
+            problems.append(f"{sym}: trading is restricted for this symbol at your broker")
+            continue
+        # A netting account keeps one position per symbol: a test BUY would merge into an open trade there
+        netting = getattr(mt5.account_info(), "margin_mode", None) == getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_NETTING", 0)
+        if netting and mt5.positions_get(symbol=resolved):
+            problems.append(f"{sym}: has an open position (netting account) — test skipped so it isn't touched")
+            continue
+
+        sl, tp = _test_levels(info, tick)
+        request = TradeRequest(symbol=sym, order_type="buy", sl=sl, tp=tp, tp1=tp, comment=TEST_COMMENT)
+        logger.info(f"TEST: opening a test BUY on {resolved} | lot={request.volume} sl={sl} tp={tp}")
+        try:
+            opened = open_trade(request, magic=TEST_MAGIC)
+        except MT5TradeError as e:
+            if f"Retcode={_MARKET_CLOSED_RETCODE}" in str(e):
+                problems.append(f"{sym}: market is closed right now")
+                continue
+            raise
+
+        ticket = int(opened.order_id or 0)
+        position = _find_test_position(ticket, resolved)
+        closed = False
+        if position is not None:
+            ticket = position.ticket
+            for attempt in range(close_attempts):
+                if close_position(position.ticket, resolved, position.volume, "buy",
+                                  comment="BS test close", magic=TEST_MAGIC):
+                    closed = True
+                    break
+                time.sleep(0.5)
+        else:
+            logger.warning(f"TEST: order #{ticket} filled but its position wasn't found — check MT5")
+
+        pnl = None
+        deals = mt5.history_deals_get(position=ticket) if closed else None
+        if deals:
+            raw = sum(float(d.profit) + float(getattr(d, "commission", 0.0)) + float(getattr(d, "swap", 0.0))
+                      + float(getattr(d, "fee", 0.0)) for d in deals)
+            pnl = round(raw / _money_divisor(), 2)
+
+        result = {"symbol": resolved, "ticket": ticket, "volume": getattr(position, "volume", request.volume),
+                  "open_price": opened.executed_price, "closed": closed, "pnl": pnl}
+        log_event("test_trade", **result)
+        if closed:
+            logger.info(f"TEST: passed — opened and closed #{ticket} on {resolved}"
+                        + (f" | result {pnl:+.2f} USD (spread cost)" if pnl is not None else ""))
+        else:
+            logger.error(f"TEST: opened #{ticket} on {resolved} but could NOT close it — close it manually in MT5")
+        return result
+
+    raise MT5TradeError("Could not run the test on any ticked pair:\n• " + "\n• ".join(problems))
