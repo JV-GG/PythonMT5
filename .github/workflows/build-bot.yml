@@ -30,6 +30,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
+      - name: Check the code (compile everything + portal link tests)
+        run: |
+          python -m compileall -q .
+          python test_portal_link.py
+
       - name: Work out the version
         id: ver
         shell: bash

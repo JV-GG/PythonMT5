@@ -14,7 +14,7 @@ try:
 except ImportError:
     mt5 = None
 
-from portal_link import PlanEnded, Unlinked
+from portal_link import PlanEnded, SessionExpired, Unlinked
 from config import get_settings
 import mt5_service
 from mt5_service import (
@@ -394,6 +394,19 @@ def _feed_failed(pair_code: str, reason: str) -> None:
         logger.debug(f"SignalTrade unreachable for {pair_code}: {reason}")
 
 
+def feed_down_minutes() -> float | None:
+    """Minutes the signal feed has been failing (longest current outage), or None when it's healthy. For the GUI."""
+    if not _feed_down:
+        return None
+    return (time.time() - min(s["since"] for s in _feed_down.values())) / 60
+
+
+def _error_reason(e: Exception) -> str:
+    """Error type plus its message (httpx timeouts often have an empty one), kept short for the log."""
+    msg = str(e).strip()
+    return f"{type(e).__name__}: {msg[:120]}" if msg else type(e).__name__
+
+
 def _feed_ok(pair_code: str) -> None:
     state = _feed_down.pop(pair_code, None)
     if state is not None:
@@ -423,7 +436,7 @@ async def _fetch_signal(client: httpx.AsyncClient, pair_code: str) -> dict[str, 
             logger.error("This bot is no longer linked. Restart it and link again from the portal.")
             return None
         except Exception as e:
-            _feed_failed(pair_code, f"token {type(e).__name__}")
+            _feed_failed(pair_code, f"token {_error_reason(e)}")
             return None
         headers = {"x-bot-token": token}
     else:
@@ -522,18 +535,23 @@ async def _poll_and_fire(client: httpx.AsyncClient) -> None:
             # One request returns the latest signal for every pair this account may trade (vs one call per pair)
             global portal_block_new
             try:
-                batch = await portal.fetch_signals(client)
+                batch = await portal.fetch_signals(client, list(settings.allowed_symbols))
                 portal_block_new = False
+                _feed_ok("portal")
             except PlanEnded:
                 if not portal_block_new:
                     logger.warning("Premium plan ended — managing open trades, opening no new ones")
                 portal_block_new = True
                 return
+            except SessionExpired:
+                # The short access token was refused; the next poll swaps the device key for a new one. Not an unlink.
+                logger.info("Signal session refreshed — reconnecting")
+                return
             except Unlinked:
                 logger.error("This bot is no longer linked. Restart it and link again from the portal.")
                 return
             except Exception as e:
-                _feed_failed("portal", f"{type(e).__name__}")
+                _feed_failed("portal", _error_reason(e))
                 return
 
     for pair_code in SIGNALTRADE_PAIR_CODES:
@@ -854,6 +872,7 @@ def start_watcher() -> bool:
     global _watcher_task
     if _watcher_task is not None and not _watcher_task.done():
         return False
+    _feed_down.clear()  # a fresh start shouldn't report an outage from the previous run
     _watcher_task = asyncio.create_task(_watcher_loop())
     return True
 

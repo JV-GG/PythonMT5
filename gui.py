@@ -381,7 +381,22 @@ class BotApp:
                 self.log.insert("end", ln + "\n")
             self.log.see("end")
             self.log.configure(state="disabled")
+        if self.running:
+            self._refresh_running_status()
         self.root.after(300, self._drain_log)
+
+    def _refresh_running_status(self) -> None:
+        """While running, say honestly whether signals are arriving (not just "Running" during a server outage)."""
+        import signal_watcher
+        down = signal_watcher.feed_down_minutes()
+        if signal_watcher.portal_block_new:
+            text, color = "● Plan ended — managing open trades, no new ones", WARN_INK
+        elif down is not None and down >= 1:
+            text, color = f"● Running — waiting for signals (server not responding for {down:.0f} min)", WARN_INK
+        else:
+            text, color = "● Running — trading the signals", GREEN
+        if self.status_label.cget("text") != text:
+            self.status_label.configure(text=text, text_color=color)
 
     # ── saved settings ─────────────────────────────────────────────────────────
     def _load_saved(self) -> None:

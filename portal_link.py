@@ -29,7 +29,7 @@ logger = logging.getLogger("portal")
 _SERVICE = "BeyondSignalBot"
 _ACCOUNT = "device_key"
 _TOKEN_SKEW = 60  # refresh a token this many seconds before it expires
-CLIENT_VERSION = "1.1.1"
+CLIENT_VERSION = "1.1.2"
 
 
 # ── device key storage ────────────────────────────────────────────────────────
@@ -144,6 +144,10 @@ class Unlinked(Exception):
     """The device key is gone or was revoked: the bot must be linked again."""
 
 
+class SessionExpired(Exception):
+    """The short access token was refused. Not an unlink: the next call swaps the device key for a new token."""
+
+
 @dataclass
 class PortalClient:
     server_url: str
@@ -173,13 +177,16 @@ class PortalClient:
         self.allowed_mt5 = {p.replace("/", "").upper() for p in data.get("pairs", [])}
         return self._token
 
-    async def fetch_signals(self, client: httpx.AsyncClient) -> dict:
-        """Latest signal per allowed pair in one request, keyed by MT5 code (XAUUSD). May raise PlanEnded/Unlinked."""
+    async def fetch_signals(self, client: httpx.AsyncClient, pairs: list[str] | None = None) -> dict:
+        """Latest signal per allowed pair in one request, keyed by MT5 code (XAUUSD).
+        `pairs` narrows the reply to the pairs this bot trades. May raise PlanEnded/Unlinked/SessionExpired."""
         token = await self.access_token(client)
-        r = await client.get(f"{self.server_url}/api/bot/signals", headers={"x-bot-token": token}, timeout=15.0)
+        params = {"pairs": ",".join(pairs)} if pairs else None
+        r = await client.get(f"{self.server_url}/api/bot/signals", headers={"x-bot-token": token},
+                             params=params, timeout=15.0)
         if r.status_code == 401:
-            self._token, self._exp = None, 0.0  # token expired mid-cycle: drop it, next call re-swaps the key
-            raise Unlinked("Bot session expired")
+            self._token, self._exp = None, 0.0  # token refused mid-cycle: drop it, next call re-swaps the key
+            raise SessionExpired("Bot session expired")
         r.raise_for_status()
         return {k: v for k, v in r.json().get("signals", {}).items() if v}
 

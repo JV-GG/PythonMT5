@@ -81,6 +81,35 @@ async def run_phase2():
     assert set(sig.keys()) == {"XAUUSD"}, sig   # null BTCUSD dropped
     assert seq["n"] == 1
 
+    # fetch_signals sends ?pairs= when the bot narrows to its ticked pairs
+    seen = {}
+    def h_pairs(req):
+        if req.url.path == "/api/bot/token":
+            return httpx.Response(200, json={"accessToken": "t", "expiresInSec": 900, "pairs": ["XAU/USD"]})
+        seen["pairs"] = req.url.params.get("pairs")
+        return httpx.Response(200, json={"signals": {}})
+    p = PortalClient(server_url="https://s", _key="bs_bot_abc")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(h_pairs)) as c:
+        await p.fetch_signals(c, ["XAUUSD", "BTCUSD"])
+    assert seen["pairs"] == "XAUUSD,BTCUSD", seen
+
+    # a refused access token is SessionExpired (not Unlinked) and the token is dropped for a fresh swap
+    from portal_link import SessionExpired, Unlinked
+    def h401(req):
+        if req.url.path == "/api/bot/token":
+            return httpx.Response(200, json={"accessToken": "t", "expiresInSec": 900, "pairs": []})
+        return httpx.Response(401, json={"error": "Bot session expired", "code": "bot_reauth"})
+    p = PortalClient(server_url="https://s", _key="bs_bot_abc")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(h401)) as c:
+        try:
+            await p.fetch_signals(c); assert False, "expected SessionExpired"
+        except SessionExpired:
+            pass
+        except Unlinked:
+            assert False, "a refused token must not read as unlinked"
+    assert p._token is None
+    assert CLIENT_VERSION == "1.1.2"
+
     # version gate
     assert version_ok("1.0.0") is True
     assert version_ok("9.9.9") is False
