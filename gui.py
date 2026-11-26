@@ -594,6 +594,11 @@ class BotApp:
             s.lot_size = data["lot_size"]
             s.allowed_symbols = pairs_to_trade(data["pairs"], self.allowed_pairs) or list(self.allowed_pairs)
 
+            # Customer defaults that match the live VPS, in case the server's rules don't send them (older servers
+            # didn't): config.py's built-in gold days are Mon-Wed only, which skipped every gold signal Thu-Sat.
+            s.xauusd_allowed_weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+            s.signaltrade_poll_interval = 2.0
+
             cfg = fetch_config(SERVER_URL, self.device_key)
             if not version_ok(cfg.get("minClientVersion", "0")):
                 raise RuntimeError("This bot is out of date. Download the latest version from the portal.")
