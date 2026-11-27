@@ -79,6 +79,11 @@ STOP_RED_HOVER = "#991b1b"
 TERM = "#0e1113"         # activity log panel
 TERM_EDGE = "#0a0d0e"
 TERM_INK = "#aeb9bc"
+SASH_HOVER = "#cdd5d7"   # the draggable divider, while the mouse is on it
+
+LOG_W_DEFAULT = 306      # activity log width (logical px); the customer drags the divider to change it
+LOG_MIN_W = 220
+LEFT_MIN_W = 520         # keeps the cards and the Start button usable however wide the log gets
 
 
 class BotApp:
@@ -163,13 +168,30 @@ class BotApp:
             self.conn_pill.configure(text="Not connected", text_color=WARN_INK, fg_color=WARN_BG)
 
     def _build_main(self, parent) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=0, minsize=306)
-        parent.rowconfigure(0, weight=1)
+        # Two panes with a draggable divider: the customer makes the activity log wider or slimmer.
+        # (tk.PanedWindow sizes in real pixels; CustomTkinter widgets are DPI-scaled, so scale the limits too.)
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self.root)
+        except Exception:
+            scale = 1.0
+        self._log_w_default = int(LOG_W_DEFAULT * scale)
+        self.pane = tk.PanedWindow(parent, orient="horizontal", bd=0, sashwidth=int(8 * scale),
+                                   sashrelief="flat", sashcursor="sb_h_double_arrow",
+                                   opaqueresize=True, bg=GROUND)
+        self.pane.pack(fill="both", expand=True)
+        # The divider is the only bare part of the pane: tint it on hover so it reads as draggable;
+        # double-click puts the log back to its default width.
+        self.pane.bind("<Motion>", lambda _e: self.pane.configure(bg=SASH_HOVER))
+        self.pane.bind("<Leave>", lambda _e: self.pane.configure(bg=GROUND))
+        self.pane.bind("<Double-Button-1>", lambda _e: self._reset_log_width())
 
         # LEFT: scrollable cards + pinned Start button
-        left = ctk.CTkFrame(parent, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=12)
+        left_pane = ctk.CTkFrame(self.pane, fg_color=GROUND, corner_radius=0)
+        left_pane.columnconfigure(0, weight=1)
+        left_pane.rowconfigure(0, weight=1)
+        self.pane.add(left_pane, minsize=int(LEFT_MIN_W * scale), stretch="always")
+        left = ctk.CTkFrame(left_pane, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(14, 3), pady=12)
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
 
@@ -250,20 +272,53 @@ class BotApp:
         self.test_btn.pack(side="right")
         self.testing = False
 
-        # RIGHT: activity log (full height)
-        right = ctk.CTkFrame(parent, fg_color=TERM, corner_radius=14, border_width=1, border_color=TERM_EDGE)
-        right.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=12)
+        # RIGHT: activity log (full height, resizable via the divider)
+        right_pane = ctk.CTkFrame(self.pane, fg_color=GROUND, corner_radius=0)
+        right_pane.columnconfigure(0, weight=1)
+        right_pane.rowconfigure(0, weight=1)
+        self.pane.add(right_pane, minsize=int(LOG_MIN_W * scale), width=self._log_w_default, stretch="never")
+        right = ctk.CTkFrame(right_pane, fg_color=TERM, corner_radius=14, border_width=1, border_color=TERM_EDGE)
+        right.grid(row=0, column=0, sticky="nsew", padx=(3, 14), pady=12)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
         lh = ctk.CTkFrame(right, fg_color="transparent")
-        lh.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        lh.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 6))
         ctk.CTkLabel(lh, text="❯  Activity log", text_color="#d6e0e2",
                      font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
-        ctk.CTkLabel(lh, text="live", text_color="#5c6c70", font=ctk.CTkFont(size=10)).pack(side="right")
+        # Clear: only while the bot is stopped (a running bot's log is the record of what it is doing)
+        self.clear_log_btn = ctk.CTkButton(lh, text="Clear", width=54, height=24, corner_radius=7,
+                                           fg_color="transparent", hover_color="#1c2326",
+                                           text_color="#c3cdd0", text_color_disabled="#3d484c",
+                                           border_width=1, border_color="#2b3438",
+                                           font=ctk.CTkFont(size=11, weight="bold"), command=self._clear_log)
+        self.clear_log_btn.pack(side="right")
+        self.live_label = ctk.CTkLabel(lh, text="", text_color="#5c6c70", font=ctk.CTkFont(size=10))
+        self.live_label.pack(side="right", padx=(0, 10))
         self.log = ctk.CTkTextbox(right, corner_radius=0, fg_color=TERM, text_color=TERM_INK,
                                   border_width=0, font=ctk.CTkFont(family="Consolas", size=11), wrap="word")
         self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.log.configure(state="disabled")
+
+    def _reset_log_width(self) -> None:
+        total = self.pane.winfo_width()
+        if total > self._log_w_default:
+            self.pane.sash_place(0, total - self._log_w_default, 0)
+
+    def _clear_log(self) -> None:
+        if self.running:
+            return
+        try:   # drop lines still waiting to be shown too
+            while True:
+                self.log_q.get_nowait()
+        except queue.Empty:
+            pass
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
+
+    def _set_log_running(self, on: bool) -> None:
+        self.clear_log_btn.configure(state="disabled" if on else "normal")
+        self.live_label.configure(text="● live" if on else "", text_color="#3fb27f")
 
     def _build_settings(self, parent) -> None:
         # header
@@ -651,6 +706,7 @@ class BotApp:
                                  fg_color=STOP_RED, hover_color=STOP_RED_HOVER)
         self._set_conn_pill("running")
         self._set_inputs_enabled(False)
+        self._set_log_running(True)
 
     def _start_failed(self, msg: str) -> None:
         self.status_label.configure(text="Stopped", text_color=MUTED)
@@ -763,6 +819,7 @@ class BotApp:
                                  fg_color=TEAL, hover_color=TEAL_HOVER)
         self._set_conn_pill("linked" if self.device_key else "off")
         self._set_inputs_enabled(True)
+        self._set_log_running(False)
         self._update_start_enabled()
 
     def _stop(self) -> None:

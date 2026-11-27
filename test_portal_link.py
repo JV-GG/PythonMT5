@@ -108,7 +108,7 @@ async def run_phase2():
         except Unlinked:
             assert False, "a refused token must not read as unlinked"
     assert p._token is None
-    assert CLIENT_VERSION == "1.1.3"
+    assert CLIENT_VERSION == "1.1.4"
 
     # version gate
     assert version_ok("1.0.0") is True

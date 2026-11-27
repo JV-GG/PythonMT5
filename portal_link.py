@@ -29,7 +29,7 @@ logger = logging.getLogger("portal")
 _SERVICE = "BeyondSignalBot"
 _ACCOUNT = "device_key"
 _TOKEN_SKEW = 60  # refresh a token this many seconds before it expires
-CLIENT_VERSION = "1.1.3"
+CLIENT_VERSION = "1.1.4"
 
 
 # ── device key storage ────────────────────────────────────────────────────────
